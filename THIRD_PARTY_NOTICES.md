@@ -8,6 +8,8 @@ The app's MIT license applies to its original Python source. Bundled dependencie
 | Tcl/Tk | 8.6, as supplied with CPython | `licenses/Tcl-license.terms`, `licenses/Tk-license.terms` |
 | Pillow | 12.2.0 | `licenses/Pillow-LICENSE.txt` (MIT-CMU and included library notices) |
 | python-zstandard | 0.25.0 | `licenses/python-zstandard-LICENSE.txt` (BSD 3-Clause) |
+| cryptography | 50.0.0 | Apache License 2.0 / BSD 3-Clause (dual licensed; https://github.com/pyca/cryptography/blob/main/LICENSE) |
+| PySide6 | 6.12.0 | LGPLv3 / GPLv3 (Qt; https://doc.qt.io/qt-6/lgpl.html). Used only for native file dialogs; the rest of the GUI remains Tk. |
 | Zstandard | 1.5.7 | `licenses/Zstandard-LICENSE.txt` (BSD license option) |
 | PyInstaller bootloader | 6.19.0 | `licenses/PyInstaller-COPYING.txt` (GPL with bootloader exception) |
 | OpenSSL | Runtime version recorded in BUILD_INFO.json | `licenses/OpenSSL-LICENSE.txt` (Apache License 2.0) |
@@ -29,4 +31,6 @@ Upstream projects:
 - Tcl/Tk: https://www.tcl.tk/
 - Pillow: https://python-pillow.github.io/
 - PyInstaller: https://pyinstaller.org/
+- cryptography: https://cryptography.io/
+- PySide6 / Qt: https://doc.qt.io/qtforpython/
 - OpenSSL: https://openssl.org/

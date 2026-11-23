@@ -9,6 +9,20 @@ DLC compatibility and storage requirements.
 
 A portable Windows app that packages a complete, already-extracted ExeFS/RomFS snapshot into a plaintext NSP for compatible emulators. Choose a folder, add your own artwork, and build an NSP.
 
+**Extract NSP** (new tab and CLI): turn your own encrypted retail NSP/XCI into an
+editable `exefs/` + `romfs/` + `control/` folder that the Game and DLC tabs accept.
+Supply your own `prod.keys` (and `title.keys` or the NSP's tickets); an optional
+update NSP is merged on top of the base RomFS, and DLC NSPs are extracted to
+`dlc/<TitleID>/romfs/`. Run from the **Extract NSP** tab or
+`NSP-Box.exe --extract-nsp --input game.nsp --output Game --prod-keys prod.keys`.
+Pick **Convert to .NUP** (or pass `--to-nup`) to decrypt and pack in one step:
+files stream directly from the decrypted NCA sections into the NUP writer, with
+no intermediate extracted folder. **Convert to .NSP** (or `--to-nsp`) does the
+same into a plaintext NSP Box `.nsp` (game only; DLC stays in the folder flow). Payloads are stored raw (no compression). An update is merged into the base RomFS,
+so the NUP holds one current snapshot rather than separate update packages.
+Plaintext emulator NSPs need no keys. Compressed NSZ/XCZ, NCA0 and personalised
+tickets are not supported; decompress those first.
+
 Version 4.0 adds NUP Tools with Fast/Balanced/Smaller compression, source-aware
 Base / Updates / DLC selection, a smaller latest-game snapshot option, custom title
 and cropped artwork, and automatic output beside the source. Source inspection

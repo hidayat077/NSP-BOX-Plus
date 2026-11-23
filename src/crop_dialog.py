@@ -21,7 +21,7 @@ class ZoomSlider(tk.Canvas):
         w=max(21,self.winfo_width());h=30;s=3
         image=Image.new('RGBA',(w*s,h*s));d=ImageDraw.Draw(image)
         x=10+(w-20)*(self.variable.get()-1)/7
-        d.rounded_rectangle((10*s,13*s,(w-10)*s,17*s),radius=2*s,fill='#344b68')
+        d.rounded_rectangle((10*s,13*s,(w-10)*s,17*s),radius=2*s,fill='#3a3a3a')
         d.rounded_rectangle((10*s,13*s,max(10.1,x)*s,17*s),radius=2*s,fill='#43aaff')
         d.ellipse(((x-8)*s,7*s,(x+8)*s,23*s),fill='#a8d7ff')
         self.photo=ImageTk.PhotoImage(image.resize((w,h),Image.Resampling.LANCZOS),master=self)
@@ -45,7 +45,13 @@ class CropDialog(tk.Toplevel):
         controls=tk.Frame(self,bg=BG);controls.pack(side='bottom',fill='x',padx=23,pady=8)
         tk.Label(controls,text='Zoom',bg=BG,fg=MUTED,font=ui_font(10)).pack(side='left')
         ZoomSlider(controls,self.zoom,self.change_zoom).pack(side='left',fill='x',expand=True,padx=15)
-        self.fit_control=ttk.Checkbutton(controls,text='Fit whole image',variable=self.fit,command=self.schedule_render);self.fit_control.pack(side='right')
+        style=ttk.Style(self)
+        style.configure('Dialog.TCheckbutton',background=BG,foreground=TEXT,indicatorbackground=FIELD,
+                        indicatorforeground=TEXT,padding=0)
+        style.map('Dialog.TCheckbutton',background=[('active',BG)],foreground=[('active',TEXT)],
+                  indicatorbackground=[('active',FIELD),('selected',ACCENT)])
+        self.fit_control=ttk.Checkbutton(controls,text='Fit whole image',variable=self.fit,style='Dialog.TCheckbutton',
+                                         command=self.schedule_render);self.fit_control.pack(side='right')
         body=tk.Frame(self,bg=BG);body.pack(fill='both',expand=True,padx=23)
         aside=tk.Frame(body,bg=BG,width=190);aside.pack(side='right',fill='y',padx=(18,0));aside.pack_propagate(False)
         tk.Label(aside,text='ICON PREVIEW',bg=BG,fg=MUTED,font=ui_font(9,True)).pack(anchor='w',pady=(10,13))
@@ -80,8 +86,8 @@ class CropDialog(tk.Toplevel):
         self.photo=ImageTk.PhotoImage(canvas_image,master=self);self.canvas.delete('all');self.canvas.create_image(0,0,anchor='nw',image=self.photo)
         self.canvas.create_rectangle(x,y,x+square,y+square,outline='#89c7ff',width=2)
         for fraction in (1/3,2/3):
-            self.canvas.create_line(x+square*fraction,y,x+square*fraction,y+square,fill='#7290b3',dash=(3,5))
-            self.canvas.create_line(x,y+square*fraction,x+square,y+square*fraction,fill='#7290b3',dash=(3,5))
+            self.canvas.create_line(x+square*fraction,y,x+square*fraction,y+square,fill='#7a7a7a',dash=(3,5))
+            self.canvas.create_line(x,y+square*fraction,x+square,y+square*fraction,fill='#7a7a7a',dash=(3,5))
         preview=encode_artwork(self.preview_source,self.current_selection())
         with Image.open(io.BytesIO(preview)) as image:self.preview_photo=ImageTk.PhotoImage(image.resize((180,180),Image.Resampling.LANCZOS),master=self)
         self.thumbnail.configure(image=self.preview_photo,width=180,height=180)

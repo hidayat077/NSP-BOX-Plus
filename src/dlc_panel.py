@@ -3,6 +3,7 @@ from pathlib import Path
 import os, queue, subprocess, sys, threading, time
 import tkinter as tk
 from tkinter import filedialog, messagebox
+import native_dialog
 import dlc
 from ui import BG, PANEL, TEXT, MUTED, Button, Entry, Combo, Check, Panel, Progress, ui_font, AmbientFrame, AmbientLabel
 
@@ -24,6 +25,7 @@ class DlcPanel(AmbientFrame):
         self.version = tk.StringVar(self, value='0')
         self.choice = tk.StringVar(self)
         self.output = tk.StringVar(self)
+        self.custom_output_dir = None
         self.verify = tk.BooleanVar(self, value=True)
         self.mapping = tk.StringVar(self, value='The original DLC title ID is detected from its folder name.')
         self.status = tk.StringVar(self, value='Select an extracted DLC folder to begin.')
@@ -47,9 +49,9 @@ class DlcPanel(AmbientFrame):
 
     def _layout(self):
         area = AmbientFrame(self); area.pack(fill='both', expand=True, padx=20, pady=(0, 10))
-        area.grid_columnconfigure(0, weight=1); area.grid_columnconfigure(1, minsize=300)
-        area.grid_rowconfigure(0, weight=1, minsize=190)
-        area.grid_rowconfigure(1, minsize=165); area.grid_rowconfigure(2, minsize=145)
+        area.grid_columnconfigure(0, weight=1); area.grid_columnconfigure(1, minsize=320)
+        area.grid_rowconfigure(0, weight=1, minsize=180)
+        area.grid_rowconfigure(1, minsize=156); area.grid_rowconfigure(2, minsize=130)
         source = Panel(area); source.grid(row=0, column=0, sticky='nsew', padx=(0, 12), pady=(0, 10))
         self.app.heading(source.inner, 'DLC files', 'dlc')
         self.folder_entry = self.path_field(source.inner, self.folder, 'Choose dlc, title/version, or romfs folder', self.pick_folder)
@@ -67,33 +69,35 @@ class DlcPanel(AmbientFrame):
         for col, (caption, variable) in enumerate([('Original DLC title ID', self.title_id), ('DLC version (numeric)', self.version)]):
             row.grid_columnconfigure(col, weight=1)
             field = tk.Frame(row, bg=PANEL); field.grid(row=0, column=col, sticky='ew', padx=(0,12) if col == 0 else 0)
-            self.label(field, caption, color=MUTED, size=9).pack(anchor='w', pady=(0,5))
-            entry = Entry(field, textvariable=variable); entry.pack(fill='x'); self.controls.append(entry)
-        self.label(details.inner, variable=self.mapping, color=MUTED, size=9, anchor='w').pack(fill='x', pady=(8,0))
+            self.label(field, caption, color=MUTED, size=9).pack(anchor='w', pady=(0,4))
+            entry = Entry(field, textvariable=variable, placeholder='Detected from the folder name' if col == 0 else '0')
+            entry.configure(height=37); entry.pack(fill='x'); self.controls.append(entry)
+        self.label(details.inner, variable=self.mapping, color=MUTED, size=9, anchor='w').pack(fill='x', pady=(7,0))
         output = Panel(area); output.grid(row=2, column=0, sticky='nsew', padx=(0,12))
         self.app.heading(output.inner, 'Output', 'file')
         row = tk.Frame(output.inner, bg=PANEL); row.pack(fill='x')
         self.output_entry = Entry(row, textvariable=self.output, placeholder='Save a separate DLC package')
         self.output_entry.pack(side='left', fill='x', expand=True)
+        self.folder_button = Button(row, '', self.pick_output_folder, self.motion, kind='browse-folder', width=45, height=41)
+        self.folder_button.pack(side='right', padx=(8,0))
         self.save_button = Button(row, '', self.pick_output, self.motion, kind='save-output', width=45, height=41)
-        self.save_button.pack(side='right', padx=(8,0)); self.controls.extend([self.output_entry,self.save_button])
+        self.save_button.pack(side='right', padx=(8,0)); self.controls.extend([self.output_entry,self.folder_button,self.save_button])
         self.verify_check = Check(output.inner, 'Verify after building', self.verify, kind='verify')
-        self.verify_check.pack(anchor='w', pady=(10,0)); self.controls.append(self.verify_check)
+        self.verify_check.pack(anchor='w', pady=(7,0)); self.controls.append(self.verify_check)
         info = Panel(area); info.grid(row=0, column=1, rowspan=3, sticky='nsew')
         self.panels = [source, details, output, info]
         self.app.heading(info.inner, 'Base game & setup', 'game')
         self.label(info.inner, 'Base NSP (optional)', color=MUTED, size=9).pack(anchor='w')
-        self.base_entry = self.path_field(info.inner, self.base_game, 'Check the base-game mapping', self.pick_base)
+        self.base_entry = self.path_field(info.inner, self.base_game, 'Optional · base-game NSP', self.pick_base)
         self.base_entry.bind('<Return>', lambda event: self.scan())
-        self.label(info.inner, 'Install DLC', size=12, color=TEXT).pack(anchor='w', pady=(12,8))
+        self.label(info.inner, 'Install DLC', size=12, color=TEXT).pack(anchor='w', pady=(10,6))
         self.label(info.inner, '1. Build the DLC package.\n\n'
-                   '2. In the emulator, use File → Install Files to NAND (wording varies). Select the DLC NSP.\n\n'
-                   '3. Open the base game’s Properties → Add-ons and enable the DLC. Restart the game.\n\n'
-                   'DLC packages are add-ons, not bootable games.\n\n'
-                   'The dump needs the game’s actual DLC data and original title ID. Packaging cannot add missing emulator services or guarantee the game detects it.',
-                   color=MUTED, size=10, justify='left', wraplength=264).pack(anchor='w')
-        self.label(info.inner, 'Minimal add-on metadata is generated. Original required-game-version information is not available in a RomFS-only dump. Use the matching game update.',
-                   color='#adc8e8', size=9, wraplength=264, justify='left').pack(anchor='w', pady=(14,0))
+                   '2. Install the NSP in the emulator (File → Install Files to NAND).\n\n'
+                   '3. Enable the add-on in the base game’s Properties, then restart.\n\n'
+                   'DLC packages are add-ons, not bootable games.',
+                   color=MUTED, size=9, justify='left', wraplength=284).pack(anchor='w')
+        self.label(info.inner, 'Uses minimal add-on metadata; use the matching game update. Packaging cannot add missing emulator services.',
+                   color='#c6c6c6', size=9, wraplength=284, justify='left').pack(anchor='w', pady=(10,0))
         self.progress = Progress(self, self.motion); self.progress.pack(fill='x')
         footer = AmbientFrame(self); footer.pack(fill='x', padx=24, pady=(14,18))
         self.label(footer, variable=self.status, color=MUTED, size=9, wraplength=430, justify='left').pack(side='left', fill='x', expand=True)
@@ -105,22 +109,35 @@ class DlcPanel(AmbientFrame):
         self.open_button.pack(side='right', padx=(10,0))
 
     def pick_folder(self):
-        folder = filedialog.askdirectory(parent=self, title='Choose extracted DLC folder')
+        folder = native_dialog.ask_directory(parent=self, title='Choose extracted DLC folder')
         if folder:
             self.folder.set(folder); self.title_id.set(''); self.scan()
 
     def pick_base(self):
-        path = filedialog.askopenfilename(parent=self, title='Choose the base-game NSP', filetypes=[('Game packages','*.nsp')])
+        path = native_dialog.ask_open_file(parent=self, title='Choose the base-game NSP', filetypes=[('Game packages','*.nsp')])
         if path:
             self.base_game.set(path)
             if self.folder.get().strip(): self.scan()
 
+    def pick_output_folder(self):
+        if self.busy: return
+        current = Path(self.output.get()).parent if self.output.get() else (self.custom_output_dir or None)
+        folder = native_dialog.ask_directory(parent=self, title='Choose DLC output folder or disk', initialdir=str(current) if current else None)
+        if folder:
+            self.custom_output_dir = Path(folder)
+            filename = Path(self.output.get()).name if self.output.get() else 'DLC.nsp'
+            if not filename.lower().endswith('.nsp'): filename = 'DLC.nsp'
+            self.output.set(str(self.custom_output_dir / filename))
+
     def pick_output(self):
         kind = 'NSP'; current = Path(self.output.get()) if self.output.get() else None
-        path = filedialog.asksaveasfilename(parent=self, title='Save DLC '+kind, defaultextension='.'+kind.lower(),
-                initialdir=str(current.parent) if current else None, initialfile=current.name if current else 'DLC.'+kind.lower(),
+        init_dir = str(self.custom_output_dir or current.parent) if (self.custom_output_dir or current) else None
+        path = native_dialog.ask_save_file(parent=self, title='Save DLC '+kind, defaultextension='.'+kind.lower(),
+                initialdir=init_dir, initialfile=current.name if current else 'DLC.'+kind.lower(),
                 filetypes=[(kind+' package','*.'+kind.lower())], confirmoverwrite=False)
-        if path: self.output.set(path)
+        if path:
+            self.output.set(path)
+            self.custom_output_dir = Path(path).parent
 
     def set_busy(self, value, cancellable=False):
         self.busy = value
@@ -148,7 +165,8 @@ class DlcPanel(AmbientFrame):
         self.mapping.set(f'Base {s.base_id:016X}  ·  DLC index {s.title_id & 0x7ff}')
         name = (self.base_info or {}).get('title', 'Game')
         name = ''.join('_' if c in '<>:"/\\|?*' else c for c in name)[:90].rstrip('. ')
-        self.output.set(str(s.root.parent/(f'{name} DLC [{s.title_id:016X}].nsp')))
+        destination = self.custom_output_dir or s.root.parent
+        self.output.set(str(destination/(f'{name} DLC [{s.title_id:016X}].nsp')))
         if self.base_info:
             try: dlc.validate_base(s,self.base_info)
             except ValueError as e: self.status.set(str(e)); return
@@ -168,7 +186,13 @@ class DlcPanel(AmbientFrame):
         except ValueError as e:
             self.status.set(str(e)); return
         if not self.output.get().strip(): self.pick_output(); return
-        output, kind, verify, base = Path(self.output.get()), 'nsp', self.verify.get(), self.base_game.get().strip()
+        out_path = Path(self.output.get().strip())
+        if out_path.is_dir():
+            name = (self.base_info or {}).get('title', 'Game')
+            name = ''.join('_' if c in '<>:"/\\|?*' else c for c in name)[:90].rstrip('. ')
+            out_path = out_path / (f'{name} DLC [{s.title_id:016X}].nsp')
+            self.output.set(str(out_path))
+        output, kind, verify, base = out_path, 'nsp', self.verify.get(), self.base_game.get().strip()
         self.set_busy(True,True); self.cancel_event.clear(); self.progress['value']=0; self.last_progress=0
         self.status.set('Preparing DLC package…'); self.open_button.configure(state='disabled')
         def worker():

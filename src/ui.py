@@ -10,8 +10,8 @@ from weakref import WeakKeyDictionary
 from ambient import AmbientBackground, AmbientFrame, AmbientLabel
 from artwork import IMAGE_EXTENSIONS
 
-BG='#0e1726';PANEL='#172338';FIELD='#1c2b42';TEXT='#edf4ff';MUTED='#93a8c8'
-ACCENT='#289bff';BORDER='#2a3b56';ICON='#a9c8f3'
+BG='#141414';PANEL='#1e1e1e';FIELD='#282828';TEXT='#f0f0f0';MUTED='#a8a8a8'
+ACCENT='#4a9eff';BORDER='#333333';ICON='#c0c0c0';HINT='#8c8c8c'
 ASSET_DIR=Path(__file__).resolve().parent/'assets'/'icons'
 _PHOTO_CACHES=WeakKeyDictionary()
 ICON_ALIASES={'folder':'browse-folder','download':'game-files','image':'cover-art',
@@ -25,6 +25,27 @@ def ui_font(size,bold=False):
     if sys.platform=='win32':return ('Segoe UI Semibold' if bold else 'Segoe UI',size)
     return ('DejaVu Sans',size,'bold' if bold else 'normal')
 
+_FONTS=WeakKeyDictionary()
+def font_for(c,spec):
+    """Cache Tk font objects per window; measuring text on every animation frame is wasteful."""
+    root=c._root();cache=_FONTS.get(root)
+    if cache is None:cache=_FONTS[root]={}
+    font=cache.get(spec)
+    if font is None:font=cache[spec]=tkfont.Font(root=c,font=spec)
+    return font
+
+def fit_text(c,text,spec,max_width):
+    """Elide with an ellipsis so captions never spill out of their control."""
+    font=font_for(c,spec);max_width=max(8,int(max_width))
+    if font.measure(text)<=max_width:return text
+    ellipsis='…';limit=max_width-font.measure(ellipsis)
+    low,high=0,len(text)
+    while low<high:
+        middle=(low+high+1)//2
+        if font.measure(text[:middle])<=limit:low=middle
+        else:high=middle-1
+    return text[:low].rstrip()+ellipsis
+
 def rgb(color):return tuple(int(color[i:i+2],16) for i in (1,3,5))
 def blend(a,b,t):return '#'+''.join(f'{round(x+(y-x)*max(0,min(1,t))):02x}' for x,y in zip(rgb(a),rgb(b)))
 @lru_cache(maxsize=128)
@@ -33,7 +54,10 @@ def icon_art(kind,size,color,width):
     asset=ASSET_DIR/(ICON_ALIASES.get(kind,kind)+'.png')
     if asset.is_file():
         with Image.open(asset) as source:
-            return source.convert('RGBA').resize((int(size),int(size)),Image.Resampling.LANCZOS)
+            # The bundled sources are 1254 px. reducing_gap lets Pillow shrink
+            # them in cheap integer steps before the final LANCZOS pass, which
+            # cuts icon preparation time without changing the visible result.
+            return source.convert('RGBA').resize((int(size),int(size)),Image.Resampling.LANCZOS,reducing_gap=3.0)
     scale=4;size=int(size);unit=size*scale/24
     image=Image.new('RGBA',(size*scale,size*scale));d=ImageDraw.Draw(image)
     pen=max(1,round(width*scale));r=pen/2
@@ -178,29 +202,36 @@ class Button(tk.Canvas):
     def draw(self):
         self.delete('all');w=self.winfo_width();h=self.winfo_height()
         if w<3:return
-        bg=self.cget('bg');base='#163d66' if self.primary else '#22344e'
-        fill=blend(base,'#3d608c',self.hot*.48)
+        bg=self.cget('bg');base='#164d7f' if self.primary else '#2b2b2b'
+        fill=blend(base,'#404040',self.hot*.48)
         if self.primary or self.selection>.001:
             top=blend('#1baaff','#68c6ff',self.hot*.45);bottom=blend('#0568ed','#398bff',self.hot*.5)
-            if not self.enabled:top=bottom='#244361'
-            top=blend(top,'#071323',self.press_depth*.16);bottom=blend(bottom,'#071323',self.press_depth*.16)
+            if not self.enabled:top=bottom='#333333'
+            top=blend(top,'#000000',self.press_depth*.16);bottom=blend(bottom,'#000000',self.press_depth*.16)
             top=blend(bg,top,self.selection);bottom=blend(bg,bottom,self.selection)
             border=blend('#137ce8','#85d3ff',self.hot*.6)
             surface(self,w,h,top,border,14,(top,bottom))
         else:
-            if self.quiet:fill=blend(bg,'#233752',self.hot)
+            if self.quiet:fill=blend(bg,'#2e2e2e',self.hot)
             if not self.enabled:fill=blend(fill,bg,.6)
-            fill=blend(fill,'#081321',self.press_depth*.22)
-            border=blend('#3b5478','#6c9bd4',self.hot) if not self.quiet else fill
+            fill=blend(fill,'#000000',self.press_depth*.22)
+            border=blend('#3d3d3d','#787878',self.hot) if not self.quiet else fill
             surface(self,w,h,fill,'#9bcfff' if self.focused else border,14)
-        color=TEXT if self.enabled else '#647c9c'
+        color=TEXT if self.enabled else '#7e7e7e'
         font=ui_font(10,True)
-        if self._metrics is None or self._metrics[0]!=(self.text,font):
-            self._metrics=((self.text,font),tkfont.Font(self,font=font).measure(self.text))
-        tw=self._metrics[1];total=tw+(29 if self.kind else 0);start=(w-total)/2
+        # Keep long captions inside the button instead of letting them run past
+        # its edge and collide with a neighbouring control.
+        available=w-(29 if self.kind else 0)-8
+        key=(self.text,available)
+        if getattr(self,'_fit_key',None)!=key:
+            self._fit_key=key;self._fit_text=fit_text(self,self.text,font,available)
+        draw_text=self._fit_text
+        if getattr(self,'_metrics_key',None)!=(draw_text,font):
+            self._metrics_key=(draw_text,font);self._metrics=font_for(self,font).measure(draw_text)
+        tw=self._metrics;total=tw+(29 if self.kind else 0);start=(w-total)/2
         dy=1.5*self.press_depth
         if self.kind:icon(self,self.kind,start,(h-21)/2+dy,21,color)
-        self.create_text(start+(29 if self.kind else 0),h/2+dy,text=self.text,anchor='w',fill=color,font=font)
+        self.create_text(start+(29 if self.kind else 0),h/2+dy,text=draw_text,anchor='w',fill=color,font=font)
 
 class Panel(tk.Canvas):
     def __init__(self,parent,**kw):
@@ -216,23 +247,23 @@ class Panel(tk.Canvas):
             self.resize_fluid_surface(event.width,event.height)
         else:
             self._fluid_width=None
-            self.delete('surface');surface(self,event.width,event.height,PANEL,'#263750',22)
+            self.delete('surface');surface(self,event.width,event.height,PANEL,'#2e2e2e',22)
         self.tag_lower('surface')
         if self.find_withtag('ambient'):self.tag_lower('ambient')
-        self.coords(self.inner_id,15,14)
-        self.itemconfigure(self.inner_id,width=max(1,event.width-30),height=max(1,event.height-28))
+        self.coords(self.inner_id,14,12)
+        self.itemconfigure(self.inner_id,width=max(1,event.width-28),height=max(1,event.height-24))
 
     def resize_fluid_surface(self,width,height):
         """Reuse rounded caps while height changes; avoid full-card rasterization."""
         cap=24
         if self._fluid_width!=width:
             self.delete('surface')
-            art=surface_art(max(1,width),52,PANEL,'#263750',22,None)
+            art=surface_art(max(1,width),52,PANEL,'#2e2e2e',22,None)
             self._fluid_photos=(ImageTk.PhotoImage(art.crop((0,0,width,cap)),master=self),
                                 ImageTk.PhotoImage(art.crop((0,52-cap,width,52)),master=self))
             self._fluid_middle=self.create_rectangle(2,cap,width-2,height-cap,fill=PANEL,outline='',tags='surface')
-            self._fluid_left=self.create_line(1,cap,1,height-cap,fill='#263750',tags='surface')
-            self._fluid_right=self.create_line(width-2,cap,width-2,height-cap,fill='#263750',tags='surface')
+            self._fluid_left=self.create_line(1,cap,1,height-cap,fill='#2e2e2e',tags='surface')
+            self._fluid_right=self.create_line(width-2,cap,width-2,height-cap,fill='#2e2e2e',tags='surface')
             self.create_image(0,0,image=self._fluid_photos[0],anchor='nw',tags='surface')
             self._fluid_bottom=self.create_image(0,height-cap,image=self._fluid_photos[1],anchor='nw',tags='surface')
             self._fluid_width=width
@@ -247,10 +278,10 @@ class Entry(tk.Canvas):
         width=kw.pop('width',15);font=kw.pop('font',ui_font(10))
         super().__init__(parent,bg=parent.cget('bg'),width=width*8,height=41,bd=0,highlightthickness=0)
         self.entry=tk.Entry(self,bd=0,highlightthickness=0,bg=FIELD,fg=TEXT,insertbackground=TEXT,
-            readonlybackground=FIELD,disabledbackground=FIELD,disabledforeground='#7188a8',
+            readonlybackground=FIELD,disabledbackground=FIELD,disabledforeground='#7e7e7e',
             selectbackground='#245b8f',selectforeground=TEXT,font=font,**kw)
         self.item=self.create_window(13,20,anchor='w',window=self.entry)
-        self.hint=tk.Label(self,text=placeholder,bg=FIELD,fg='#829ab9',font=ui_font(9),bd=0,cursor='xterm')
+        self.hint=tk.Label(self,text=placeholder,bg=FIELD,fg=HINT,font=ui_font(9),bd=0,cursor='xterm')
         self.hint.bind('<Button-1>',lambda e:self.entry.focus_set())
         super().bind('<Configure>',lambda e:self.draw())
         self.entry.bind('<FocusIn>',lambda e:self.draw());self.entry.bind('<FocusOut>',lambda e:self.draw())
@@ -268,7 +299,7 @@ class Entry(tk.Canvas):
     def draw(self):
         w=self.winfo_width();h=self.winfo_height()
         if w<3:return
-        self.delete('surface');surface(self,w,h,FIELD,'#64b4ff' if self.focus_get() is self.entry else '#354b68',13)
+        self.delete('surface');surface(self,w,h,FIELD,'#64b4ff' if self.focus_get() is self.entry else '#3a3a3a',13)
         self.tag_lower('surface');self.coords(self.item,13,h/2);self.itemconfigure(self.item,width=max(1,w-26))
         self.refresh_hint()
     def refresh_hint(self):
@@ -293,12 +324,12 @@ class Combo(tk.Canvas):
     def draw(self):
         w=self.winfo_width();h=self.winfo_height()
         if w<3:return
-        self.delete('surface');surface(self,w,h,FIELD,'#64b4ff' if self.focus_get() is self.entry else '#354b68',12)
+        self.delete('surface');surface(self,w,h,FIELD,'#64b4ff' if self.focus_get() is self.entry else '#3a3a3a',12)
         self.tag_lower('surface');self.coords(self.item,12,h/2);self.itemconfigure(self.item,width=max(1,w-24))
 
 class DropZone(tk.Canvas):
     def __init__(self,parent,app):
-        super().__init__(parent,bg=PANEL,highlightthickness=0,height=172,bd=0)
+        super().__init__(parent,bg=PANEL,highlightthickness=0,height=104,bd=0)
         self.app=app;self.hot=0;self.bind('<Configure>',lambda e:self.draw())
         self.bind('<Enter>',lambda e:self.hover(1));self.bind('<Leave>',lambda e:self.hover(0))
         self.app.folder.trace_add('write',lambda *args:self.draw())
@@ -307,38 +338,53 @@ class DropZone(tk.Canvas):
     def draw(self):
         self.delete('all');w=self.winfo_width();h=self.winfo_height()
         if w<4:return
-        surface(self,w,h,blend('#192b43','#1d3859',self.hot),blend('#425979','#6faeff',self.hot),20)
-        # Reserve the real button footprint, then fit the text above it. Fixed
-        # percentages used to overlap the button at compact window sizes.
+        fill=blend('#242424','#2e2e2e',self.hot)
+        surface(self,w,h,fill,blend('#3a3a3a','#6faeff',self.hot),20)
         button=getattr(self.app,'browse',None)
-        fill=blend('#192b43','#1d3859',self.hot)
         if button is not None and button.cget('bg')!=fill:
             button.configure(bg=fill)  # Rounded corners must match this surface.
-        button_top=h-12-(button.winfo_reqheight() if button is not None else 37)
-        compact=h<112
-        title_font=ui_font(12 if compact else 13,True);subtitle_font=ui_font(9 if compact else 10)
-        title_height=tkfont.Font(self,font=title_font).metrics('linespace')
-        subtitle_height=tkfont.Font(self,font=subtitle_font).metrics('linespace')
-        text_height=title_height+3+subtitle_height
-        padding=4 if compact else 8
-        available=max(0,button_top-2*padding)
-        show_icon=available>=text_height+52
-        block_height=text_height+(52 if show_icon else 0)
-        top=padding+max(0,(available-block_height)/2)
-        if show_icon:
-            icon(self,'download',w/2-20,top,40,blend('#7297c9','#a6ceff',self.hot),2.1)
-            top+=52
+        button_h=button.winfo_reqheight() if button is not None else 32
+        # Measure the stack from the bottom up so the caption can never slide
+        # underneath the real button when the card is squeezed by row resizing.
+        limit=h-8-button_h-4
+        max_width=max(40,w-32)
         selected=Path(self.app.folder.get()).name if self.app.folder.get() else None
         title=selected or ('Drop your game folder here' if sys.platform=='win32' else 'Select your game folder')
-        if len(title)>56:title=title[:53]+'…'
-        self.create_text(w/2,top+title_height/2,text=title,fill='#bdd6fa',font=title_font,tags='folder-title')
-        self.create_text(w/2,top+title_height+3+subtitle_height/2,
-                         text='Choose another folder' if selected else 'or choose a folder manually',
-                         fill=MUTED,font=subtitle_font,tags='folder-subtitle')
+        subtitle='Choose another folder' if selected else 'or choose a folder manually'
+        chosen=None
+        for title_size,subtitle_size in ((13,10),(12,9),(11,8)):
+            title_font=ui_font(title_size,True);subtitle_font=ui_font(subtitle_size)
+            title_h=font_for(self,title_font).metrics('linespace')+4
+            subtitle_h=font_for(self,subtitle_font).metrics('linespace')+2
+            text_h=title_h+2+subtitle_h
+            icon_h=50 if limit>=text_h+50 else 0
+            if limit>=text_h+icon_h:chosen=(title_font,subtitle_font,title_h,subtitle_h,icon_h);break
+        if chosen is None:
+            title_font=ui_font(10,True);title_h=font_for(self,title_font).metrics('linespace')+4
+            chosen=(title_font,None,title_h,0,0)
+        title_font,subtitle_font,title_h,subtitle_h,icon_h=chosen
+        block=title_h+(2+subtitle_h if subtitle_font else 0)+icon_h
+        top=max(3,min(4+max(0,(limit-4)-block)/2,limit-title_h))
+        if icon_h:
+            icon(self,'download',w/2-20,top,40,blend('#808080','#a6ceff',self.hot),2.1)
+            top+=icon_h
+        title_item=self.create_text(w/2,top,anchor='n',text=fit_text(self,title,title_font,max_width),
+                                    fill='#e6e6e6',font=title_font,tags='folder-title')
+        box=self.bbox(title_item)
+        if box and box[3]>limit:
+            # Font bounding boxes include a little padding beyond their
+            # linespace; nudge the caption up rather than touching the button.
+            self.coords(title_item,w/2,max(0,limit-(box[3]-box[1])))
+            box=self.bbox(title_item)
+        if subtitle_font and box:
+            item=self.create_text(w/2,box[3]+2,anchor='n',text=fit_text(self,subtitle,subtitle_font,max_width),
+                                  fill=MUTED,font=subtitle_font,tags='folder-subtitle')
+            sub=self.bbox(item)
+            if sub and sub[3]>limit:self.delete(item)
 
 class Cover(tk.Canvas):
     def __init__(self,parent,app):
-        super().__init__(parent,bg=PANEL,width=240,height=220,highlightthickness=0,bd=0,cursor='hand2')
+        super().__init__(parent,bg=PANEL,width=240,height=132,highlightthickness=0,bd=0,cursor='hand2')
         self.app=app;self.picture=None;self.photo=None;self.hot=0;self._photo_side=0
         self.bind('<Configure>',lambda e:self.draw());self.bind('<Button-1>',lambda e:app.pick_art() if not app.busy else None)
         self.bind('<Enter>',lambda e:self.hover(1));self.bind('<Leave>',lambda e:self.hover(0))
@@ -355,20 +401,21 @@ class Cover(tk.Canvas):
     def draw(self):
         self.delete('all');w=self.winfo_width();h=self.winfo_height()
         if w<3:return
-        surface(self,w,h,blend('#213552','#28496f',self.hot*.45),blend('#344b6c','#75a6e3',self.hot),20)
+        surface(self,w,h,blend('#262626','#303030',self.hot*.45),blend('#383838','#75a6e3',self.hot),20)
         if self.picture:
             side=max(32,min(w-24,h-24,256))
             if self._photo_side!=side:
                 self.photo=ImageTk.PhotoImage(self.picture.resize((side,side),Image.Resampling.LANCZOS));self._photo_side=side
             self._art_y=h/2;self.create_image(w/2,h/2+8*(1-getattr(self,'reveal_t',1)),image=self.photo,tags='artwork')
         else:
-            icon(self,'image',w/2-43,h*.38-43,86,'#6488b9',3)
-            self.create_text(w/2,h*.69,text='Add cover artwork',fill='#b0c9ee',font=ui_font(11,True))
-            self.create_text(w/2,h*.69+28,text='WEBP, PNG, JPG + more',fill=MUTED,font=ui_font(9))
+            mark=int(max(40,min(86,h*.40)))
+            icon(self,'image',w/2-mark/2,h*.33-mark/2,mark,'#7a7a7a',max(2,mark/28))
+            self.create_text(w/2,h*.68,text='Add cover artwork',fill='#c8c8c8',font=ui_font(11,True))
+            self.create_text(w/2,h*.68+25,text='WEBP, PNG, JPG + more',fill=MUTED,font=ui_font(9))
 
 class Progress(tk.Canvas):
     def __init__(self,parent,motion):
-        super().__init__(parent,height=3,bg='#18243a',highlightthickness=0,bd=0)
+        super().__init__(parent,height=3,bg='#202020',highlightthickness=0,bd=0)
         self.value=0;self.motion=motion;self.bind('<Configure>',lambda e:self.draw())
     def __setitem__(self,key,value):
         if key=='value':self.motion.to((id(self),'progress'),self.value,float(value),.24,self.update_value)
@@ -380,8 +427,11 @@ class Progress(tk.Canvas):
 
 class Check(tk.Canvas):
     def __init__(self,parent,text,variable,kind=None):
-        super().__init__(parent,bg=parent.cget('bg'),height=25,width=280 if kind else 230,highlightthickness=0,bd=0,takefocus=True,cursor='hand2')
+        super().__init__(parent,bg=parent.cget('bg'),height=25,width=1,highlightthickness=0,bd=0,takefocus=True,cursor='hand2')
         self.text=text;self.variable=variable;self.enabled=True;self.kind=kind
+        # Request only the width the caption needs; the old fixed widths either
+        # clipped long labels or forced controls into avoidable overlap.
+        self.configure(width=(58 if kind else 31)+font_for(self,ui_font(10)).measure(text)+10)
         self.bind('<Configure>',lambda e:self.draw());self.bind('<Button-1>',lambda e:self.invoke())
         self.bind('<space>',lambda e:self.invoke());self.bind('<Return>',lambda e:self.invoke())
         self.bind('<FocusIn>',lambda e:self.draw());self.bind('<FocusOut>',lambda e:self.draw())
@@ -395,10 +445,12 @@ class Check(tk.Canvas):
     config=configure
     def draw(self):
         self.delete('all');checked=self.variable.get()
-        surface(self,22,22,'#168ff8' if checked else FIELD,'#8bcaff' if self.focus_get() is self else ('#3ba8ff' if checked else '#546d90'),6)
+        surface(self,22,22,'#168ff8' if checked else FIELD,'#8bcaff' if self.focus_get() is self else ('#3ba8ff' if checked else '#4d4d4d'),6)
         if checked:icon(self,'check',3,3,16,TEXT,1.8)
         if self.kind:icon(self,self.kind,31,1,21)
-        self.create_text(58 if self.kind else 31,11,text=self.text,anchor='w',fill=TEXT if self.enabled else MUTED,font=ui_font(10))
+        offset=58 if self.kind else 31
+        caption=fit_text(self,self.text,ui_font(10),max(8,self.winfo_width()-offset-6))
+        self.create_text(offset,11,text=caption,anchor='w',fill=TEXT if self.enabled else MUTED,font=ui_font(10))
 
 class Status(tk.Canvas):
     def __init__(self,parent,app):
@@ -488,10 +540,10 @@ class Layout:
             if ctypes.windll.user32.SystemParametersInfoW(0x1042,0,ctypes.byref(enabled),0):self.motion.enabled=bool(enabled.value)
         s=ttk.Style(self);s.theme_use('clam')
         s.configure('.',font=ui_font(10),background=PANEL,foreground=TEXT)
-        s.configure('TEntry',fieldbackground=FIELD,foreground=TEXT,bordercolor='#344962',lightcolor='#344962',darkcolor='#344962',
-                    padding=(11,10),insertcolor=TEXT,selectbackground='#225d96')
-        s.map('TEntry',fieldbackground=[('disabled','#17243a'),('readonly',FIELD)],foreground=[('disabled','#7188a8'),('readonly','#bdd1ef')],bordercolor=[('focus','#5faeff')])
-        s.configure('TCombobox',fieldbackground=FIELD,background=FIELD,foreground=TEXT,arrowcolor=ICON,padding=(10,8),bordercolor='#344962')
+        s.configure('TEntry',fieldbackground=FIELD,foreground=TEXT,bordercolor='#3a3a3a',lightcolor='#3a3a3a',darkcolor='#3a3a3a',
+                    padding=(11,10),insertcolor=TEXT,selectbackground='#2c5c8a',selectforeground=TEXT)
+        s.map('TEntry',fieldbackground=[('disabled','#202020'),('readonly',FIELD)],foreground=[('disabled','#7e7e7e'),('readonly','#d0d0d0')],bordercolor=[('focus','#5faeff')])
+        s.configure('TCombobox',fieldbackground=FIELD,background=FIELD,foreground=TEXT,arrowcolor=ICON,padding=(10,8),bordercolor='#3a3a3a')
         s.map('TCombobox',fieldbackground=[('readonly',FIELD)],foreground=[('readonly',TEXT)],selectbackground=[('readonly',FIELD)])
         self.option_add('*TCombobox*Listbox.background',FIELD);self.option_add('*TCombobox*Listbox.foreground',TEXT)
         s.configure('Flat.TCombobox',borderwidth=0,relief='flat',padding=(0,3),fieldbackground=FIELD,
@@ -502,7 +554,19 @@ class Layout:
         s.map('TCheckbutton',background=[('active',PANEL)])
         s.configure('TLabel',background=BG,foreground=TEXT);s.configure('Section.TLabel',font=ui_font(12,True))
         s.configure('TButton',padding=(12,9),background=FIELD,foreground=TEXT,bordercolor=BORDER)
-        s.map('TButton',background=[('active','#294566')]);s.configure('TFrame',background=BG)
+        s.map('TButton',background=[('active','#323232')]);s.configure('TFrame',background=BG)
+        s.configure('Treeview',background=FIELD,foreground=TEXT,fieldbackground=FIELD)
+        s.map('Treeview',background=[('selected','#2c5c8a')],foreground=[('selected',TEXT)])
+        s.configure('TMenubutton',background=FIELD,foreground=TEXT,bordercolor='#3a3a3a',arrowcolor=ICON)
+        s.map('TMenubutton',background=[('active','#2c5c8a')])
+        s.configure('TScrollbar',background='#3d3d3d',bordercolor=BORDER,troughcolor='#191919',arrowcolor=MUTED,arrowsize=11)
+        s.map('TScrollbar',background=[('active','#2c5c8a')])
+        self.option_add('*Menu.background',FIELD);self.option_add('*Menu.foreground',TEXT)
+        self.option_add('*Menu.activeBackground','#2c5c8a');self.option_add('*Menu.activeForeground',TEXT)
+        self.option_add('*Listbox.background',FIELD);self.option_add('*Listbox.foreground',TEXT)
+        self.option_add('*Listbox.selectBackground','#2c5c8a');self.option_add('*Listbox.selectForeground',TEXT)
+        self.option_add('*TkChooseDir*background',BG);self.option_add('*TkFDialog*background',BG)
+        self.option_add('*Dialog*background',BG)
 
     def label(self,parent,text=None,var=None,color=TEXT,size=10,bold=False,**kw):
         label_type=AmbientLabel if isinstance(parent,AmbientFrame) else tk.Label
@@ -510,33 +574,35 @@ class Layout:
                         font=ui_font(size,bold),bd=0,**kw)
 
     def heading(self,parent,title,kind):
-        row=tk.Frame(parent,bg=PANEL);row.pack(fill='x',pady=(0,10))
+        row=tk.Frame(parent,bg=PANEL);row.pack(fill='x',pady=(0,8))
         c=tk.Canvas(row,width=25,height=25,bg=PANEL,bd=0,highlightthickness=0);c.pack(side='left',padx=(0,10));icon(c,kind,1,1,23)
         self.label(row,title,size=12,bold=True).pack(side='left')
 
     def layout(self):
-        self.configure(bg=BG);self.geometry('1160x880');self.minsize(1010,830)
+        self.configure(bg=BG);self.geometry('1120x860');self.minsize(960,700)
         self._ambient=AmbientBackground(self,self.motion)
         self.title_id_text=tk.StringVar(value='Detected automatically');self.snapshot_info=tk.StringVar(value='Choose a game folder to begin.')
-        header=AmbientFrame(self);header.pack(fill='x',padx=24,pady=(19,14))
-        mark=tk.Canvas(header,width=60,height=60,bg=BG,highlightthickness=0);mark.pack(side='left',padx=(0,17))
-        self._ambient.register(mark);icon(mark,'app',0,0,60)
-        title=AmbientFrame(header,width=355,height=60);title.pack(side='left')
-        title.create_text(0,0,text='NSP Box',anchor='nw',fill=TEXT,font=ui_font(26,True))
-        title.create_text(1,42,text='Nintendo Switch 2 · games & DLC',anchor='nw',fill='#aec6e9',font=ui_font(11))
+        header=AmbientFrame(self);header.pack(fill='x',padx=24,pady=(14,8))
+        mark=tk.Canvas(header,width=56,height=56,bg=BG,highlightthickness=0);mark.pack(side='left',padx=(0,16))
+        self._ambient.register(mark);icon(mark,'app',0,0,56)
+        title=AmbientFrame(header,width=355,height=56);title.pack(side='left')
+        title.create_text(0,0,text='NSP Box',anchor='nw',fill=TEXT,font=ui_font(24,True))
+        title.create_text(1,37,text='Nintendo Switch 2 · games & DLC',anchor='nw',fill=MUTED,font=ui_font(10))
         self.help_btn=Button(header,'Notes & compatibility',self.notes,self.motion,width=192,quiet=True,kind='notes');self.help_btn.pack(side='right')
         self.emulator_patch_btn=Button(header,'Emulator patch',self.emulator_patch,self.motion,width=156,quiet=True,kind='emulator-patch');self.emulator_patch_btn.pack(side='right',padx=(0,10))
-        tabs=AmbientFrame(self);tabs.pack(fill='x',padx=24,pady=(0,10))
+        tabs=AmbientFrame(self);tabs.pack(fill='x',padx=24,pady=(0,8))
         self.game_tab_button=Button(tabs,'Game',lambda:self.show_tab('game'),self.motion,width=112,height=36,primary=True,kind='game')
         self.game_tab_button.pack(side='left',padx=(0,8))
         self.dlc_tab_button=Button(tabs,'DLC',lambda:self.show_tab('dlc'),self.motion,width=108,height=36,quiet=True,kind='dlc')
         self.dlc_tab_button.pack(side='left')
         self.nup_tab_button=Button(tabs,'NUP Tools',lambda:self.show_tab('nup'),self.motion,width=145,height=36,quiet=True,kind='package-folder')
         self.nup_tab_button.pack(side='left',padx=(8,0))
+        self.extract_tab_button=Button(tabs,'Extract NSP',lambda:self.show_tab('extract'),self.motion,width=132,height=36,quiet=True,kind='browse-folder')
+        self.extract_tab_button.pack(side='left',padx=(8,0))
         footer=AmbientFrame(self);footer.pack(side='bottom',fill='x')
         self.game_footer=footer
         self.progressbar=Progress(footer,self.motion);self.progressbar.pack(fill='x')
-        action=AmbientFrame(footer);action.pack(fill='x',padx=24,pady=(16,18))
+        action=AmbientFrame(footer);action.pack(fill='x',padx=24,pady=(12,14))
         self.status_icon=Status(action,self);self.status_icon.pack(side='left',padx=(0,12))
         status=AmbientFrame(action);status.pack(side='left',fill='x',expand=True)
         self.label(status,var=self.status,bold=True,size=11,anchor='w').pack(anchor='w')
@@ -544,18 +610,18 @@ class Layout:
         self.build_btn=Button(action,'Build NSP',self.start,self.motion,width=155,height=47,kind='build',primary=True);self.build_btn.pack(side='right',padx=(10,0))
         self.cancel_btn=Button(action,'Cancel',self.cancel,self.motion,width=105,height=47,kind='cancel',state='disabled');self.cancel_btn.pack(side='right',padx=(10,0))
         self.open_btn=Button(action,'Open output folder',self.open_output,self.motion,width=190,height=47,kind='open-output',state='disabled');self.open_btn.pack(side='right',padx=(12,0))
-        area=AmbientFrame(self);area.pack(fill='both',expand=True,padx=20,pady=(0,12));self.content_area=area;self._compact=False
+        area=AmbientFrame(self);area.pack(fill='both',expand=True,padx=20,pady=(0,8));self.content_area=area
         area.grid_columnconfigure(0,weight=1);area.grid_columnconfigure(1,minsize=270)
-        area.grid_rowconfigure(0,weight=1,minsize=255);area.grid_rowconfigure(1,minsize=186);area.grid_rowconfigure(2,minsize=185)
+        area.grid_rowconfigure(0,weight=1,minsize=180);area.grid_rowconfigure(1,minsize=170);area.grid_rowconfigure(2,minsize=130)
         self.panels=[]
         game=Panel(area);game.grid(row=0,column=0,sticky='nsew',padx=(0,12),pady=(0,10));self.panels.append(game)
         self.heading(game.inner,'Game files','game-files')
         self.drop_zone=DropZone(game.inner,self)
-        self.browse=Button(self.drop_zone,'Browse folder',self.pick_folder,self.motion,width=172,height=37,kind='browse-folder')
-        self.browse.place(relx=.5,rely=1,anchor='s',y=-12)
+        self.browse=Button(self.drop_zone,'Browse folder',self.pick_folder,self.motion,width=172,height=32,kind='browse-folder')
+        self.browse.place(relx=.5,rely=1,anchor='s',y=-8)
         # Pack the fixed-height editor first so the expanding drop target cannot
         # consume its allocation and leave just a sliver of placeholder text.
-        pathrow=tk.Frame(game.inner,bg=PANEL);pathrow.pack(side='bottom',fill='x',pady=(9,0))
+        pathrow=tk.Frame(game.inner,bg=PANEL);pathrow.pack(side='bottom',fill='x',pady=(8,0))
         self.folder_entry=Entry(pathrow,textvariable=self.folder,font=ui_font(9),placeholder='Or paste a folder path and press Enter');self.folder_entry.configure(height=35);self.folder_entry.pack(fill='x')
         self.folder_entry.bind('<Return>',lambda e:self.scan())
         self.drop_zone.pack(fill='both',expand=True)
@@ -567,35 +633,40 @@ class Layout:
         self.name_entry=None
         for col,(text,var) in enumerate([('Title',self.title_text),('Title ID',self.title_id_text),('Display version',self.version_text)]):
             frame=tk.Frame(fields,bg=PANEL);frame.grid(row=0,column=col,sticky='ew',padx=(0,12) if col<2 else 0)
-            self.label(frame,text,color=MUTED,size=9).pack(anchor='w',pady=(0,6))
-            entry=Entry(frame,textvariable=var,width=12,placeholder='Detected automatically' if col==0 else '');entry.pack(fill='x')
+            self.label(frame,text,color=MUTED,size=9).pack(anchor='w',pady=(0,4))
+            entry=Entry(frame,textvariable=var,width=12,placeholder='Detected automatically' if col==0 else '');entry.configure(height=37);entry.pack(fill='x')
             if col==0:self.name_entry=entry
             elif col==1:entry.configure(state='readonly');self.id_entry=entry
             else:self.version_entry=entry
-        snapshot=tk.Frame(details.inner,bg=PANEL);snapshot.pack(fill='x',pady=(10,0))
+        snapshot=tk.Frame(details.inner,bg=PANEL);snapshot.pack(fill='x',pady=(7,0))
         self.label(snapshot,'Snapshot',color=MUTED,size=9).pack(side='left',padx=(0,12))
-        self.combo=Combo(snapshot,textvariable=self.snapshot_label,state='readonly',font=ui_font(9));self.combo.pack(side='left',fill='x',expand=True)
+        self.combo=Combo(snapshot,textvariable=self.snapshot_label,state='readonly',font=ui_font(9));self.combo.configure(height=35);self.combo.pack(side='left',fill='x',expand=True)
         self.combo.bind('<<ComboboxSelected>>',lambda e:self.select_snapshot())
         out=Panel(area);out.grid(row=2,column=0,sticky='nsew',padx=(0,12));self.panels.append(out)
         self.heading(out.inner,'NSP output','save-output')
         outrow=tk.Frame(out.inner,bg=PANEL);outrow.pack(fill='x')
         self.out_entry=Entry(outrow,textvariable=self.output,placeholder='Choose where to save your package');self.out_entry.pack(side='left',fill='x',expand=True)
+        self.folder_btn=Button(outrow,'',self.pick_output_folder,self.motion,width=45,height=39,kind='browse-folder');self.folder_btn.pack(side='right',padx=(7,0))
         self.save_btn=Button(outrow,'',self.pick_output,self.motion,width=45,height=39,kind='save-output');self.save_btn.pack(side='right',padx=(7,0))
-        self.verify_check=Check(out.inner,text='Verify after building',variable=self.verify,kind='verify');self.verify_check.pack(anchor='w',pady=(10,0))
-        self.package_folder_check=Check(out.inner,text='Create package folder',variable=self.package_folder,kind='package-folder');self.package_folder_check.pack(anchor='w',pady=(5,0))
+        checkrow=tk.Frame(out.inner,bg=PANEL);checkrow.pack(fill='x',pady=(6,0))
+        self.verify_check=Check(checkrow,text='Verify after building',variable=self.verify,kind='verify');self.verify_check.pack(side='left')
+        self.package_folder_check=Check(checkrow,text='Create package folder',variable=self.package_folder,kind='package-folder');self.package_folder_check.pack(side='left',padx=(18,0))
         art=Panel(area);art.grid(row=0,column=1,rowspan=2,sticky='nsew',pady=(0,10));self.panels.append(art)
         self.heading(art.inner,'Cover art','cover-art')
-        self.preview=Cover(art.inner,self);self.preview.pack(fill='both',expand=True,pady=(1,12))
+        self.preview=Cover(art.inner,self);self.preview.pack(fill='both',expand=True,pady=(0,10))
         artrow=tk.Frame(art.inner,bg=PANEL);artrow.pack(fill='x')
-        self.art_btn=Button(artrow,'Add artwork',self.pick_art,self.motion,kind='add-artwork',height=44,width=145);self.art_btn.pack(side='left',fill='x',expand=True)
-        self.paste_art_btn=Button(artrow,'Paste',self.paste_art,self.motion,kind='paste',height=44,width=83);self.paste_art_btn.pack(side='right',padx=(8,0))
+        self.art_btn=Button(artrow,'Add artwork',self.pick_art,self.motion,kind='add-artwork',height=40,width=145);self.art_btn.pack(side='left',fill='x',expand=True)
+        self.paste_art_btn=Button(artrow,'Paste',self.paste_art,self.motion,kind='paste',height=40,width=83);self.paste_art_btn.pack(side='right',padx=(8,0))
         self.art_name=tk.StringVar(value='256 × 256 square icon')
-        self.label(art.inner,var=self.art_name,color=MUTED,size=9,wraplength=235,anchor='w',justify='left').pack(anchor='w',pady=(10,2))
+        self.label(art.inner,var=self.art_name,color=MUTED,size=9,wraplength=235,anchor='w',justify='left').pack(anchor='w',pady=(8,2))
         arttools=tk.Frame(art.inner,bg=PANEL);arttools.pack(fill='x')
         self.crop_art_btn=Button(arttools,'Crop icon',self.crop_art,self.motion,width=124,height=31,quiet=True,kind='crop',state='disabled');self.crop_art_btn.pack(side='left')
         self.clear_art_btn=Button(arttools,'Remove',self.clear_art,self.motion,width=99,height=31,quiet=True,kind='remove-artwork');self.clear_art_btn.pack(side='right')
-        small=AmbientFrame(area);small.grid(row=2,column=1,sticky='nw',padx=7,pady=8)
-        self.game_run_note=self.label(small,'Running Switch 2 NSPs\n1. Keep the game’s main.npdm beside its NSP.\n2. Or use a supported emulator in Emulator patch.\n\nUse each game’s own file. Newer PokeDinner needs no patch.',color=MUTED,size=9,wraplength=245,justify='left')
+        small=Panel(area);small.grid(row=2,column=1,sticky='nsew')
+        self.heading(small.inner,'Running on Switch 2','notes')
+        note_text='Keep main.npdm beside its NSP, or use Emulator patch.\nNewer PokeDinner needs no patch.'
+        self.game_run_note=self.label(small.inner,note_text,color=MUTED,size=9,wraplength=235,justify='left')
+        self.game_run_note.text=note_text
         self.game_run_note.pack(anchor='w')
         self.bind('<Configure>',self.resized,add=True)
         self._visual_jobs=set();self.defer_visual(60,self.enter_panels)
@@ -623,12 +694,6 @@ class Layout:
     def resized(self,event):
         if event.widget is self and hasattr(self,'detail_label'):
             self.detail_label.configure(wraplength=max(220,event.width-620))
-            compact=event.height<860
-            if compact!=self._compact:
-                self._compact=compact
-                self.drop_zone.configure(height=95 if compact else 150)
-                for row,size in enumerate((205,184,175) if compact else (255,186,185)):
-                    self.content_area.grid_rowconfigure(row,minsize=size)
 
     def setup_drops(self):
         try:self._drops=FileDrops(self,self.receive_drop)

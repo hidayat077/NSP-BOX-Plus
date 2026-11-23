@@ -156,4 +156,26 @@ class NupTests(unittest.TestCase):
         with self.assertRaises(InterruptedError):nt.nup_to_nsp(path,self.root/'cancelled',cancel=event)
         self.assertFalse((self.root/'cancelled').exists());self.assertFalse(list(self.root.glob('.nup-convert-*')))
 
+    def test_metadata_placed_before_blob_offset(self):
+        p=nf.Package(TID,0,0,{'romfs/test.bin':nf.Source.data(b'content')},metadata=[(5,b'My Title')])
+        path=self.root/'meta_before_bo.nup';nf.pack([p],path)
+        b=bytearray(path.read_bytes())
+        magic,hs,hv,to,ts,th,bo,fs,pc,flags,ident,res=nf.SUPER.unpack_from(b,0)
+        tid,root,ex,rom,ver,kind,pflags,r,r2,mo,ms,r3=nf.PKG.unpack_from(b[to:to+ts],nf.TOC.size)
+        meta_data=b[mo:mo+ms];new_mo=to+ts;new_bo=nf.align(new_mo+ms);shift=new_bo-bo
+        new_toc=bytearray(b[to:to+ts])
+        nf.PKG.pack_into(new_toc,nf.TOC.size,tid,root,ex,rom,ver,kind,pflags,r,r2,new_mo,ms,r3)
+        tm,np,nd,nf_cnt,po,ps,tr=nf.TOC.unpack_from(new_toc,0)
+        at_f=nf.TOC.size+np*nf.PKG.size+nd*nf.DIR.size
+        for j in range(nf_cnt):
+            no,nl,sz,off,stored,digest,codec,cf,r_f,r3_f=nf.FILE.unpack_from(new_toc,at_f)
+            if off>0:nf.FILE.pack_into(new_toc,at_f,no,nl,sz,off+shift,stored,digest,codec,cf,r_f,r3_f)
+            at_f+=nf.FILE.size
+        payload=b[bo:mo];new_fs=new_bo+len(payload)
+        new_super=nf.SUPER.pack(b'NUP\1',128,1,to,ts,hashlib.sha256(new_toc).digest(),new_bo,new_fs,pc,0,ident,bytes(32))
+        path.write_bytes(new_super+new_toc+meta_data+bytes(new_bo-(new_mo+ms))+payload)
+        with nf.Archive(path) as a:
+            self.assertEqual(a.packages[0].metadata[0][1],b'My Title')
+            a.verify()
+
 if __name__=='__main__':unittest.main()

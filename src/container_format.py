@@ -12,6 +12,14 @@ class FilePart:
     path: Path
     size: int
 
+class View:
+    """Lazy byte range from a random-access source (no intermediate file)."""
+    def __init__(self, source, offset, size):
+        self.source, self.offset, self.size = source, offset, size
+
+    def read_range(self, pos, size):
+        return self.source.read(self.offset + pos, size)
+
 _context = threading.local()
 
 def configure(cancel=None, progress=None):
@@ -47,6 +55,7 @@ class Blob:
             elif isinstance(p, int):
                 if p < 0: raise ValueError('Negative padding')
                 if p: self.parts.append((None, p))
+            elif hasattr(p, 'read_range'): self.parts.append((p, p.size))
             elif p: self.parts.append((bytes(p), len(p)))
         self.size = sum(n for _, n in self.parts)
 
@@ -62,6 +71,7 @@ class Blob:
                     n = min(block - len(pending), size - pos)
                     if f: b = f.read(n)
                     elif source is None: b = bytes(n)
+                    elif hasattr(source, 'read_range'): b = source.read_range(pos, n)
                     else: b = source[pos:pos+n]
                     if len(b) != n: raise IOError('Source changed or short read')
                     if source_hash is not None:source_hash.update(b)
@@ -117,7 +127,7 @@ def name_hash(parent, name):
         h = ((h >> 5) | ((h << 27) & 0xffffffff)) ^ c
     return h
 
-def romfs(root, manifest, notify=None):
+def romfs(root, manifest, notify=None, entries=None):
     dirs = []; files = []
     def visit(path, parent):
         checkpoint()
@@ -135,7 +145,24 @@ def romfs(root, manifest, notify=None):
                 files.append(f); d['files'].append(f)
                 if notify and len(files)%1024==0:notify(len(files))
         return d
-    visit(root,None)
+    if entries is None:
+        visit(root,None)
+    else:
+        # Same table layout, but files come from lazy sources instead of a disk folder.
+        home = dict(path=b'',name=b'',parent=None,dirs=[],files=[])
+        dirs.append(home); by_path={'':home}
+        for name,size,part in entries:
+            checkpoint()
+            segs=name.split('/');parent=home;prefix=''
+            for seg in segs[:-1]:
+                prefix=prefix+'/'+seg if prefix else seg
+                if prefix not in by_path:
+                    d=dict(path=prefix,name=seg.encode(),parent=parent,dirs=[],files=[])
+                    dirs.append(d);parent['dirs'].append(d);by_path[prefix]=d
+                parent=by_path[prefix]
+            f=dict(path=part,name=segs[-1].encode(),parent=parent,size=size,part=part,display=name)
+            files.append(f);parent['files'].append(f)
+            if notify and len(files)%1024==0:notify(len(files))
     doff = 0; foff = 0; dataoff = 0
     for d in dirs:
         d['off'] = doff; doff += 0x18+align(len(d['name']),4)
@@ -166,8 +193,10 @@ def romfs(root, manifest, notify=None):
         entry=pack('IIQQII',par,sib,f['dataoff'],f['size'],fh[bucket],len(f['name']))
         fh[bucket]=f['off']; off=f['off'];ft[off:off+0x20]=entry
         ft[off+0x20:off+0x20+len(f['name'])]=f['name']
-        payload.extend([f['dataoff']-pos,FilePart(f['path'],f['size'])]);pos=f['dataoff']+f['size']
-        manifest.append({'path':str(f['path']), 'size':f['size'], 'romfs_offset':f['dataoff']})
+        payload.extend([f['dataoff']-pos,
+                        f['part'] if 'part' in f else FilePart(f['path'],f['size'])])
+        pos=f['dataoff']+f['size']
+        manifest.append({'path':f.get('display',str(f['path'])), 'size':f['size'], 'romfs_offset':f['dataoff']})
     dhb=pack('I'*len(dh),*dh);fhb=pack('I'*len(fh),*fh)
     dhpos=0x50;dtpos=dhpos+len(dhb);fhpos=dtpos+len(dt);ftpos=fhpos+len(fhb)
     datap=align(ftpos+len(ft),0x10)

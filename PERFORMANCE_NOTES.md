@@ -12,6 +12,12 @@ This release targets large extracted file collections, especially the initial sc
 
 NSP Box streams the same content directly into PFS0 without an intermediate container or temporary NCA files. Verification reuses source SHA-256 values captured while writing, then independently reads back all output integrity trees and payloads. Regression checks bound input reads and reject intermediate container files. Packaging format does not guarantee higher gameplay FPS.
 
+## Desktop interface
+
+- The ambient light field behind the window is static. It is rendered once when the window is first shown and again after a resize settles. The previous version re-uploaded a window-sized image about 12 times per second for a decorative drift, which kept a CPU core busy even while the app was idle. In a local X11 measurement, idle use fell from roughly 23% of one core to about 1–2%.
+- The DLC and NUP Tools tabs are built when first opened. Their complete interfaces no longer consume startup time for users who only package a game.
+- Bundled 1254 px icons now use Pillow's `reducing_gap` during downscaling. This shortens icon preparation without changing the rendered icon size or appearance.
+
 ## Changes
 
 - RomFS sibling linking now takes one pass over the entries. Previously each entry searched its siblings again, which could take quadratic time in a directory with many entries.

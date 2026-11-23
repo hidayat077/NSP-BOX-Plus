@@ -271,6 +271,13 @@ def nsp_to_nup(path,output,include_kinds=None,**options):
     with nsp_packages(path,options.get('cancel'),options.get('notify',lambda *a:None)) as packages:
         return pack(select_packages(packages,include_kinds),output,**options)
 
+def nup_to_nup(path,output,latest_snapshot=True,include_kinds=None,**options):
+    require(Path(path).resolve()!=Path(output).resolve(),'Input and output must differ.')
+    with Archive(path,options.get('cancel')) as archive:
+        packages=select_packages(archive.packages,include_kinds)
+        if latest_snapshot:packages=compact_packages(packages)
+        return pack(packages,output,source_guard=archive.unchanged,**options)
+
 def romfs_files(buf):
     """Bounded RomFS traversal: never follow repeated offsets in imported NSPs."""
     vals=vf.u('10Q',buf);require(vals[0]==0x50,'Invalid RomFS header.')

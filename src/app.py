@@ -3,19 +3,19 @@ from pathlib import Path
 import argparse, ctypes, io, json, os, queue, re, sys, threading, time, traceback, tempfile, subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import native_dialog
 from PIL import Image, ImageOps, ImageTk, ImageGrab
 import engine
 import compatibility
 from startup_notice import StartupNotice, default_preferences_path, should_show
 from artwork import ArtworkSelection, ARTWORK_FILETYPES, IMAGE_EXTENSIONS
 from crop_dialog import CropDialog
-from ui import Layout, BG, PANEL, FIELD, TEXT, MUTED, ACCENT, BORDER
+from ui import Layout, BG, PANEL, FIELD, TEXT, MUTED, ACCENT, BORDER, ui_font
 
 class App(Layout,tk.Tk):
     def __init__(self,show_startup=True,preferences_path=None):
         super().__init__()
         self.title('NSP Box');self.configure(bg=BG)
-        self.geometry('1020x800');self.minsize(950,760)
         self.events=queue.Queue();self.cancel_event=threading.Event();self.busy=False;self.scanning=False
         self.snapshots=[];self.art_path=None;self.art_selection=None;self.last_output=None;self.last_progress=0
         self._clipboard_temp=None;self._art_editor=None
@@ -23,37 +23,73 @@ class App(Layout,tk.Tk):
         self._startup_dialog=None;self._startup_job=None
         self.folder=tk.StringVar();self.snapshot_label=tk.StringVar();self.title_text=tk.StringVar()
         self.version_text=tk.StringVar(value='Snapshot');self.output=tk.StringVar();self.id_text=tk.StringVar(value='Choose a game folder to detect the title ID.')
+        self.custom_output_dir=None
         self.verify=tk.BooleanVar(value=True);self.package_folder=tk.BooleanVar(value=True);self.status=tk.StringVar(value='Ready')
         self.detail=tk.StringVar(value='Select a game folder to begin.')
-        self.style();self.layout()
-        from dlc_panel import DlcPanel
-        self.dlc_panel=DlcPanel(self)
-        from nup_panel import NupPanel
-        self.nup_panel=NupPanel(self);self.active_tab='game'
+        self.style();self.layout();self.fit_to_screen()
+        # Hidden tabs are built on first use; constructing every complete
+        # interfaces at launch spent CPU on widgets the user may never open.
+        self._dlc_panel=None;self._nup_panel=None;self._extract_panel=None;self.active_tab='game'
         self.protocol('WM_DELETE_WINDOW',self.close);self._poll_job=self.after(100,self.poll)
         self.bind_all('<Control-v>',self.paste_art_shortcut,add='+')
         self.bind_all('<Control-V>',self.paste_art_shortcut,add='+')
         # Startup guidance lives in the Game tab and Notes, without a modal.
 
+    @property
+    def dlc_panel(self):
+        if self._dlc_panel is None:
+            from dlc_panel import DlcPanel
+            self._dlc_panel=DlcPanel(self)
+        return self._dlc_panel
+    @property
+    def nup_panel(self):
+        if self._nup_panel is None:
+            from nup_panel import NupPanel
+            self._nup_panel=NupPanel(self)
+        return self._nup_panel
+
+    @property
+    def extract_panel(self):
+        if self._extract_panel is None:
+            from extract_panel import ExtractPanel
+            self._extract_panel=ExtractPanel(self)
+        return self._extract_panel
+
+    def fit_to_screen(self):
+        """Open at a comfortable size that still fits laptop work areas."""
+        screen_width,screen_height=self.winfo_screenwidth(),self.winfo_screenheight()
+        width=max(960,min(1120,screen_width-100))
+        height=max(700,min(860,screen_height-120))
+        self.minsize(min(width,1000),min(height,700))
+        self.geometry(f'{width}x{height}')
+
     def show_startup_caution(self):
         self._startup_job=None
 
     def show_tab(self,tab):
-        if self.busy or self.scanning or self.dlc_panel.busy or self.nup_panel.busy:return
+        if self.busy or self.scanning or (self._dlc_panel is not None and self._dlc_panel.busy) or (self._nup_panel is not None and self._nup_panel.busy) or (self._extract_panel is not None and self._extract_panel.busy):return
         if tab==self.active_tab:return
         self.active_tab=tab
-        self.content_area.pack_forget();self.game_footer.pack_forget();self.dlc_panel.pack_forget();self.nup_panel.pack_forget()
-        if tab in ('dlc','nup'):
-            (self.dlc_panel if tab=='dlc' else self.nup_panel).pack(fill='both',expand=True)
+        self.content_area.pack_forget();self.game_footer.pack_forget()
+        if self._dlc_panel is not None:self._dlc_panel.pack_forget()
+        if self._nup_panel is not None:self._nup_panel.pack_forget()
+        if self._extract_panel is not None:self._extract_panel.pack_forget()
+        if tab=='dlc':self.dlc_panel.pack(fill='both',expand=True)
+        elif tab=='nup':self.nup_panel.pack(fill='both',expand=True)
+        elif tab=='extract':self.extract_panel.pack(fill='both',expand=True)
         else:
             self.game_footer.pack(side='bottom',fill='x')
             self.content_area.pack(fill='both',expand=True,padx=20,pady=(0,12))
-        for button,selected in ((self.game_tab_button,tab=='game'),(self.dlc_tab_button,tab=='dlc'),(self.nup_tab_button,tab=='nup')):
+        for button,selected in ((self.game_tab_button,tab=='game'),(self.dlc_tab_button,tab=='dlc'),(self.nup_tab_button,tab=='nup'),(self.extract_tab_button,tab=='extract')):
             button.set_selected(selected)
-        self.enter_panels(self.dlc_panel.panels if tab=='dlc' else (self.nup_panel.panels if tab=='nup' else self.panels))
+        if tab=='dlc':selected_panel=self.dlc_panel
+        elif tab=='nup':selected_panel=self.nup_panel
+        elif tab=='extract':selected_panel=self.extract_panel
+        else:selected_panel=None
+        self.enter_panels(selected_panel.panels if selected_panel is not None else self.panels)
 
     def pick_folder(self):
-        value=filedialog.askdirectory(title='Select main game dump folder',parent=self)
+        value=native_dialog.ask_directory(title='Select main game dump folder',parent=self)
         if value:self.folder.set(value);self.scan()
 
     def scan(self):
@@ -77,20 +113,33 @@ class App(Layout,tk.Tk):
         else:v='dump-'+str(s.version) if s.version else 'Snapshot'
         self.version_text.set(v)
         name=re.sub(r'[<>:"/\\|?*\x00-\x1f]','_',s.title).rstrip('. ')[:110]
-        destination=s.root.parent
+        destination=self.custom_output_dir or s.root.parent
         self.output.set(str(destination/(f'{name} [{s.title_id:016X}].nsp')))
+
+    def pick_output_folder(self):
+        if self.busy:return
+        current=Path(self.output.get()).parent if self.output.get() else (self.custom_output_dir or None)
+        folder=native_dialog.ask_directory(parent=self,title='Choose output folder or disk',initialdir=str(current) if current else None)
+        if folder:
+            self.custom_output_dir=Path(folder)
+            filename=Path(self.output.get()).name if self.output.get() else 'Game.nsp'
+            if not filename.lower().endswith('.nsp'):filename='Game.nsp'
+            self.output.set(str(self.custom_output_dir/filename))
 
     def pick_output(self):
         current=Path(self.output.get()) if self.output.get() else None
         kind='NSP';ext='.nsp'
-        value=filedialog.asksaveasfilename(parent=self,title='Save rebuilt '+kind,defaultextension=ext,
-            filetypes=[(kind+' package','*'+ext)],initialdir=str(current.parent) if current else None,
+        init_dir=str(self.custom_output_dir or current.parent) if (self.custom_output_dir or current) else None
+        value=native_dialog.ask_save_file(parent=self,title='Save rebuilt '+kind,defaultextension=ext,
+            filetypes=[(kind+' package','*'+ext)],initialdir=init_dir,
             initialfile=current.name if current else 'Game'+ext,confirmoverwrite=False)
-        if value:self.output.set(value)
+        if value:
+            self.output.set(value)
+            self.custom_output_dir=Path(value).parent
 
     def pick_art(self):
         if self.busy:return
-        value=filedialog.askopenfilename(parent=self,title='Choose artwork',filetypes=ARTWORK_FILETYPES)
+        value=native_dialog.ask_open_file(parent=self,title='Choose artwork',filetypes=ARTWORK_FILETYPES)
         if value:self.set_art(Path(value))
 
     def set_art(self,path):
@@ -164,7 +213,13 @@ class App(Layout,tk.Tk):
         i=self.combo.current()
         if not 0<=i<len(self.snapshots):messagebox.showinfo('Choose a game','Select a game folder first.',parent=self);return
         if not self.output.get().strip():self.pick_output();return
-        options=(self.snapshots[i],Path(self.output.get()),self.title_text.get().strip(),self.version_text.get().strip(),self.art_selection or self.art_path,self.verify.get())
+        out_path=Path(self.output.get().strip())
+        if out_path.is_dir():
+            s=self.snapshots[i]
+            name=re.sub(r'[<>:"/\\|?*\x00-\x1f]','_',self.title_text.get().strip() or s.title).rstrip('. ')[:110]
+            out_path=out_path/(f'{name} [{s.title_id:016X}].nsp')
+            self.output.set(str(out_path))
+        options=(self.snapshots[i],out_path,self.title_text.get().strip(),self.version_text.get().strip(),self.art_selection or self.art_path,self.verify.get())
         package_folder=self.package_folder.get()
         self.set_busy(True);self.cancel_event.clear();self.last_progress=0;self.progressbar['value']=0
         self.status.set('Preparing build');self.detail.set('Your original dump stays untouched.');self.open_btn.configure(state='disabled')
@@ -238,7 +293,7 @@ class App(Layout,tk.Tk):
         ttk.Button(buttons,text='Export plaintext compatibility file…',command=lambda:self.export_keys(w)).pack(anchor='w',pady=(0,8))
         ttk.Button(buttons,text='Set up emulator keys folder…',command=lambda:self.setup_compatibility(w)).pack(anchor='w')
         from tkinter.scrolledtext import ScrolledText
-        body=ScrolledText(w,bg=BG,fg=TEXT,relief='flat',bd=0,wrap='word',font=('Segoe UI',10),padx=4,pady=4)
+        body=ScrolledText(w,bg=BG,fg=TEXT,relief='flat',bd=0,wrap='word',font=ui_font(10),padx=4,pady=4)
         body.pack(fill='both',expand=True,padx=20);body.insert('1.0',text);body.configure(state='disabled')
 
     def emulator_patch(self):
@@ -248,7 +303,7 @@ class App(Layout,tk.Tk):
         self._emulator_dialog=EmulatorDialog(self)
 
     def setup_compatibility(self,parent):
-        folder=filedialog.askdirectory(parent=parent,title='Choose the emulator keys folder',
+        folder=native_dialog.ask_directory(parent=parent,title='Choose the emulator keys folder',
             initialdir=str(Path(os.environ.get('APPDATA',Path.home()))/'eden'/'keys'))
         if not folder:return
         try:
@@ -260,7 +315,7 @@ class App(Layout,tk.Tk):
         except Exception as e:messagebox.showerror('Compatibility setup could not finish',str(e),parent=parent)
 
     def export_keys(self,parent):
-        path=filedialog.asksaveasfilename(parent=parent,title='Export local placeholder keys',initialfile='plaintext-repack.keys',defaultextension='.keys',filetypes=[('Key configuration','*.keys')])
+        path=native_dialog.ask_save_file(parent=parent,title='Export local placeholder keys',initialfile='plaintext-repack.keys',defaultextension='.keys',filetypes=[('Key configuration','*.keys')])
         if path:
             try:
                 with Path(path).open('x',encoding='utf-8') as f:f.write(engine.placeholder_keys())
@@ -268,16 +323,19 @@ class App(Layout,tk.Tk):
             except Exception as e:messagebox.showerror('Export failed',str(e),parent=parent)
 
     def close(self):
-        if self.nup_panel.busy:self.nup_panel.cancel();return
+        if self._nup_panel is not None and self._nup_panel.busy:self._nup_panel.cancel();return
+        if self._extract_panel is not None and self._extract_panel.busy:self._extract_panel.cancel();return
         dialog=getattr(self,'_emulator_dialog',None)
         if dialog is not None and dialog.winfo_exists():
             if dialog.working:dialog.lift();dialog.message.set('Wait for the emulator patch operation to finish before closing.');return
             dialog.close()
-        if self.dlc_panel.busy:
-            self.dlc_panel.cancel();return
+        if self._dlc_panel is not None and self._dlc_panel.busy:
+            self._dlc_panel.cancel();return
         if self.busy:
             self.cancel();self.detail.set('Cancelling the build. Close the app again after cleanup finishes.');return
-        self.dlc_panel.close();self.nup_panel.close()
+        if self._dlc_panel is not None:self._dlc_panel.close()
+        if self._nup_panel is not None:self._nup_panel.close()
+        if self._extract_panel is not None:self._extract_panel.close()
         if self._drops:self._drops.close()
         if self._startup_job:self.after_cancel(self._startup_job)
         if self._startup_dialog is not None and self._startup_dialog.winfo_exists():
@@ -324,6 +382,9 @@ def cli(argv):
     return result
 
 def main():
+    if '--extract-nsp' in sys.argv:
+        import nsp_extract
+        return nsp_extract.cli_main([a for a in sys.argv[1:] if a!='--extract-nsp'])
     if '--nup-operation' in sys.argv:
         import nup_cli
         return nup_cli.main(sys.argv[1:])

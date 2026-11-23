@@ -2,6 +2,7 @@
 from pathlib import Path
 import queue,threading,tkinter as tk
 from tkinter import filedialog
+import native_dialog
 import emulator_patch
 from emulator_profiles import SUPPORTED_BUILDS, SUPPORT_CHECKED_DATE
 from ui import BG,PANEL,TEXT,MUTED,Button,Entry,Panel,ui_font
@@ -9,7 +10,8 @@ from ui import BG,PANEL,TEXT,MUTED,Button,Entry,Panel,ui_font
 class EmulatorDialog(tk.Toplevel):
     def __init__(self,parent):
         super().__init__(parent);self.withdraw();self.title('Emulator patch');self.configure(bg=BG)
-        self.geometry('800x790');self.minsize(780,780);self.transient(parent)
+        self.dialog_height=max(720,min(790,self.winfo_screenheight()-80))
+        self.geometry(f'800x{self.dialog_height}');self.minsize(740,700);self.transient(parent)
         self.parent=parent;self.motion=parent.motion;self.working=False;self.view=None;self.events=queue.Queue()
         self.folder=tk.StringVar();self.summary=tk.StringVar(value='Select the folder containing the emulator executable.')
         self.message=tk.StringVar(value='No emulator files have been changed.')
@@ -17,7 +19,7 @@ class EmulatorDialog(tk.Toplevel):
         tk.Label(self,text='Read Switch 2 metadata inside NSP',bg=BG,fg=MUTED,font=ui_font(11)).pack(anchor='w',padx=24)
         self.native_notice=tk.Label(self,text='PokeDinner 2.5.0 and newer builds with native NSP support need no patch or external main.npdm.\n'
                  'Thanks to Franseven, creator of PokeDinner, for integrating support! Older builds are listed below.',
-                 bg=BG,fg='#b9d8ff',font=ui_font(10),justify='left',wraplength=748)
+                 bg=BG,fg='#c6c6c6',font=ui_font(10),justify='left',wraplength=748)
         self.native_notice.pack(anchor='w',padx=24,pady=(12,0))
         row=tk.Frame(self,bg=BG);row.pack(fill='x',padx=24,pady=(20,14))
         self.entry=Entry(row,textvariable=self.folder,placeholder='Choose a Windows x64 emulator folder');self.entry.pack(side='left',fill='x',expand=True)
@@ -38,7 +40,7 @@ class EmulatorDialog(tk.Toplevel):
                  'Other builds/forks require matching loader and metadata-reader code; unmatched files stay untouched.\n'
                  'Experimental detection patch only. Games, saves and emulator settings are unchanged.',
                  bg=BG,fg=MUTED,font=ui_font(9),justify='left',wraplength=720).pack(anchor='w',padx=24,pady=(15,12))
-        tk.Label(self,textvariable=self.message,bg=BG,fg='#b9d8ff',font=ui_font(10),justify='left',wraplength=650).pack(anchor='w',padx=24)
+        tk.Label(self,textvariable=self.message,bg=BG,fg='#c6c6c6',font=ui_font(10),justify='left',wraplength=650).pack(anchor='w',padx=24)
         buttons=tk.Frame(self,bg=BG);buttons.pack(side='bottom',fill='x',padx=24,pady=22)
         self.apply_button=Button(buttons,'Add patch',lambda:self.run('apply'),self.motion,kind='apply-patch',primary=True,state='disabled');self.apply_button.pack(side='right')
         self.remove_button=Button(buttons,'Remove patch',lambda:self.run('remove'),self.motion,kind='remove-patch',state='disabled');self.remove_button.pack(side='right',padx=(0,10))
@@ -46,10 +48,10 @@ class EmulatorDialog(tk.Toplevel):
         self.protocol('WM_DELETE_WINDOW',self.close);self.job=self.after(70,self.poll)
         self.update_idletasks()
         x=max(0,parent.winfo_rootx()+(parent.winfo_width()-800)//2)
-        y=max(0,parent.winfo_rooty()+(parent.winfo_height()-790)//2)
-        self.geometry(f'800x790{x:+d}{y:+d}');self.deiconify()
+        y=max(0,parent.winfo_rooty()+(parent.winfo_height()-self.dialog_height)//2)
+        self.geometry(f'800x{self.dialog_height}{x:+d}{y:+d}');self.deiconify()
     def pick(self):
-        folder=filedialog.askdirectory(parent=self,title='Select the folder containing the emulator executable')
+        folder=native_dialog.ask_directory(parent=self,title='Select the folder containing the emulator executable')
         if folder:self.folder.set(folder);self.check()
     def check(self):
         if self.folder.get().strip():self.run('inspect')

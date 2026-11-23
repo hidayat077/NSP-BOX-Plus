@@ -3,25 +3,30 @@ from pathlib import Path
 import os, queue, subprocess, sys, threading, time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import native_dialog
 import engine, nup_tools as tools
 from artwork import ArtworkSelection, ARTWORK_FILETYPES, IMAGE_EXTENSIONS
 from crop_dialog import CropDialog
 from nup_format import PRESETS, KINDS, Archive
 from ui import BG,PANEL,TEXT,MUTED,Button,Entry,Check,Panel,Progress,ui_font,AmbientFrame,AmbientLabel
 
-OPERATIONS=('Folder → NUP','NSP → NUP','NUP → Folder','NUP → NSP','Inspect / Verify')
+OPERATIONS=('Folder → NUP','NSP → NUP','NUP → NUP','NUP → Folder','NUP → NSP','Inspect / Verify')
 INCLUDE_GROUPS={'Base':(0,),'Updates':(1,),'DLC':(2,3)}
 
-def automatic_output(path,operation):
-    """Place results beside the input; never overwrite a previous result."""
+def automatic_output(path,operation,destination_dir=None):
+    """Place results beside the input or in destination_dir; never overwrite a previous result."""
     source=Path(path).absolute()
     if source.name.lower() in ('exefs','romfs') and operation==OPERATIONS[0]:source=source.parent
-    if operation==OPERATIONS[4]:return ''
+    if operation==OPERATIONS[5]:return ''
     stem=source.name if operation==OPERATIONS[0] else source.stem
-    suffix='.nup' if operation in OPERATIONS[:2] else ('-NSP' if operation==OPERATIONS[3] else '-extracted')
-    candidate=source.parent/(stem+suffix);number=2
+    if operation in OPERATIONS[:2]:suffix='.nup'
+    elif operation==OPERATIONS[2]:suffix='-raw.nup'
+    elif operation==OPERATIONS[4]:suffix='-NSP'
+    else:suffix='-extracted'
+    parent=Path(destination_dir).absolute() if destination_dir else source.parent
+    candidate=parent/(stem+suffix);number=2
     while candidate.exists():
-        candidate=source.parent/(f'{stem} ({number})'+suffix);number+=1
+        candidate=parent/(f'{stem} ({number})'+suffix);number+=1
     return str(candidate)
 
 class NupPanel(AmbientFrame):
@@ -29,6 +34,7 @@ class NupPanel(AmbientFrame):
         super().__init__(parent,bg=BG);self.app=parent;self.motion=parent.motion
         self.events=queue.Queue();self.cancel_event=threading.Event();self.busy=False;self.last_output=None;self.catalog=[];self.prepared=None;self.catalog_source=None
         self.operation=tk.StringVar(self,value=OPERATIONS[0]);self.input=tk.StringVar(self);self.output=tk.StringVar(self)
+        self.custom_output_dir=None;self.custom_output_file=None
         self.preset=tk.StringVar(self,value='Balanced');self.large_raw=tk.BooleanVar(self,value=True);self.verify=tk.BooleanVar(self,value=True)
         self.latest_snapshot=tk.BooleanVar(self,value=True)
         self.includes={name:tk.BooleanVar(self,value=True) for name in ('Base','Updates','DLC')}
@@ -47,10 +53,10 @@ class NupPanel(AmbientFrame):
         modes=AmbientFrame(self);modes.pack(fill='x',padx=20,pady=(0,10));self.op_buttons=[]
         for i,op in enumerate(OPERATIONS):
             modes.grid_columnconfigure(i,weight=1,uniform='modes')
-            button=Button(modes,op,lambda value=op:self.choose_operation(value),self.motion,width=120,height=39,quiet=True)
-            button.grid(row=0,column=i,sticky='ew',padx=(0,6) if i<4 else 0);self.op_buttons.append(button)
+            button=Button(modes,op,lambda value=op:self.choose_operation(value),self.motion,width=100,height=39,quiet=True)
+            button.grid(row=0,column=i,sticky='ew',padx=(0,6) if i<len(OPERATIONS)-1 else 0);self.op_buttons.append(button)
         area=AmbientFrame(self);area.pack(fill='both',expand=True,padx=20,pady=(0,12));self.area=area
-        area.grid_columnconfigure(0,weight=1);area.grid_columnconfigure(1,minsize=310);area.grid_rowconfigure(1,weight=1)
+        area.grid_columnconfigure(0,weight=1);area.grid_columnconfigure(1,minsize=340);area.grid_rowconfigure(1,weight=1)
         source=Panel(area,height=150,fluid_resize=True);source.grid(row=0,column=0,sticky='nsew',padx=(0,12),pady=(0,12));self.source_panel=source
         self.app.heading(source.inner,'NUP source','package-folder')
         row=tk.Frame(source.inner,bg=PANEL);row.pack(fill='x')
@@ -86,22 +92,33 @@ class NupPanel(AmbientFrame):
         self.report_text('Choose a source to see its packages.\n\nBase, Updates and DLC control what goes into the output. Updates are merged only when selected.\n\nUse Inspect / Verify to check a NUP without creating another copy.')
         options=Panel(area);options.grid(row=0,column=1,rowspan=2,sticky='nsew')
         self.app.heading(options.inner,'Build options','save-output')
-        self.label(options.inner,'Compression').pack(anchor='w',pady=(0,6))
+        self.label(options.inner,'Compression').pack(anchor='w',pady=(0,5))
         presets=tk.Frame(options.inner,bg=PANEL);presets.pack(fill='x');self.preset_buttons=[]
         for i,name in enumerate(PRESETS):
             presets.grid_columnconfigure(i,weight=1,uniform='presets')
-            button=Button(presets,name,lambda value=name:self.choose_preset(value),self.motion,width=80,height=36,quiet=True)
-            button.grid(row=0,column=i,sticky='ew',padx=(0,4) if i<2 else 0);self.preset_buttons.append(button)
-        self.label(options.inner,'Fast 1 · Balanced 3 · Smaller 9').pack(anchor='w',pady=(5,14))
+            button=Button(presets,name,lambda value=name:self.choose_preset(value),self.motion,width=65,height=36,quiet=True)
+            button.grid(row=0,column=i,sticky='ew',padx=(0,4) if i<len(PRESETS)-1 else 0);self.preset_buttons.append(button)
+        self.label(options.inner,'None 0 · Fast 1 · Balanced 3 · Smaller 9').pack(anchor='w',pady=(2,8))
         self.large_check=Check(options.inner,'Keep files > 256 MiB raw',self.large_raw,kind='package-folder');self.large_check.pack(anchor='w',fill='x')
-        self.label(options.inner,'Recommended for Eglantine: avoids expanding compressed large files to temporary disk storage.',wraplength=275,justify='left').pack(anchor='w',pady=(6,14))
+        self.label(options.inner,'Recommended for Eglantine.',wraplength=310,justify='left').pack(anchor='w',pady=(3,8))
         self.verify_check=Check(options.inner,'Verify after building',self.verify,kind='verify');self.verify_check.pack(anchor='w',fill='x')
         self.controls.extend((self.verify_check,self.large_check,self.snapshot_check))
-        self.label(options.inner,'Extraction always checks hashes. Inspect / Verify uses this option for full verification.',wraplength=275,justify='left').pack(anchor='w',pady=(6,14))
-        self.label(options.inner,'Output · automatic',color=TEXT,size=10).pack(anchor='w',pady=(2,6))
-        self.output_label=self.label(options.inner,variable=self.destination,wraplength=275,justify='left',size=9);self.output_label.pack(anchor='w',pady=(0,14))
-        self.label(options.inner,'NUP compatibility',color='#b9d8ff',size=10).pack(anchor='w',pady=(2,6))
-        self.label(options.inner,'Plaintext inputs only. Requires a NUP-capable emulator.\n\nDLC mounting depends on the emulator; convert DLC to NSP to install it where needed.',wraplength=275,justify='left').pack(anchor='w')
+        self.label(options.inner,'Output destination',color=TEXT,size=10).pack(anchor='w',pady=(6,3))
+        outrow=tk.Frame(options.inner,bg=PANEL);outrow.pack(fill='x',pady=(0,3))
+        self.output_entry=Entry(outrow,textvariable=self.output,placeholder='Automatic · beside source')
+        self.output_entry.pack(side='left',fill='x',expand=True)
+        self.folder_button=Button(outrow,'',self.pick_output_folder,self.motion,width=36,height=36,kind='browse-folder')
+        self.folder_button.pack(side='right',padx=(4,0))
+        self.file_button=Button(outrow,'',self.pick_output_file,self.motion,width=36,height=36,kind='save-output')
+        self.file_button.pack(side='right',padx=(4,0))
+        destrow=tk.Frame(options.inner,bg=PANEL);destrow.pack(fill='x',pady=(0,6))
+        self.output_label=self.label(destrow,variable=self.destination,wraplength=230,justify='left',size=9)
+        self.output_label.pack(side='left',fill='x',expand=True)
+        self.reset_button=Button(destrow,'Reset',self.reset_output,self.motion,width=52,height=28,quiet=True)
+        self.reset_button.pack(side='right',padx=(4,0))
+        self.controls.extend((self.output_entry,self.folder_button,self.file_button,self.reset_button))
+        self.label(options.inner,'NUP compatibility',color='#c6c6c6',size=10).pack(anchor='w',pady=(2,4))
+        self.label(options.inner,'Plaintext inputs only. NUP-capable emulator required.\nDLC mounting depends on the emulator; convert to NSP if needed.',wraplength=310,justify='left').pack(anchor='w')
         self.panels=[source,packages,options]
         self.progress=Progress(self,self.motion);self.progress.pack(fill='x')
         footer=AmbientFrame(self);footer.pack(fill='x',padx=24,pady=(12,18))
@@ -119,10 +136,60 @@ class NupPanel(AmbientFrame):
         if not self.busy:
             self.status.set('Press Enter to inspect this source.' if self.input.get().strip() else 'Choose a folder or package to begin.')
             self.report_text('Choose and inspect a source to see its available Base, Updates and DLC content.')
+    def pick_output_folder(self):
+        if self.busy:return
+        current=self.custom_output_dir or (Path(self.output.get()).parent if self.output.get() else None)
+        folder=native_dialog.ask_directory(parent=self.app,title='Choose NUP output folder or disk',initialdir=str(current) if current else None)
+        if folder:
+            self.custom_output_dir=Path(folder)
+            self.custom_output_file=None
+            self.update_destination()
+
+    def pick_output_file(self):
+        if self.busy:return
+        op=self.operation.get()
+        if op==OPERATIONS[5]:return
+        ext='.nup' if op in OPERATIONS[:3] else ('.nsp' if op==OPERATIONS[4] else '')
+        current=Path(self.output.get()) if self.output.get() else None
+        init_dir=str(self.custom_output_dir or (current.parent if current else ''))
+        value=native_dialog.ask_save_file(parent=self.app,title='Choose output file destination',
+            defaultextension=ext if ext else None,
+            filetypes=[('NUP archives','*.nup')] if ext=='.nup' else ([('NSP packages','*.nsp')] if ext=='.nsp' else None),
+            initialdir=init_dir if init_dir else None,
+            initialfile=current.name if current else None,confirmoverwrite=False)
+        if value:
+            self.custom_output_file=Path(value)
+            self.custom_output_dir=self.custom_output_file.parent
+            self.output.set(str(self.custom_output_file))
+            self.destination.set('Custom file · '+self.custom_output_file.name)
+
+    def reset_output(self):
+        if self.busy:return
+        self.custom_output_dir=None
+        self.custom_output_file=None
+        self.update_destination()
+
     def update_destination(self):
-        value=automatic_output(self.input.get().strip(),self.operation.get()) if self.input.get().strip() else ''
+        if self.custom_output_file:
+            self.output.set(str(self.custom_output_file))
+            self.destination.set('Custom file · '+self.custom_output_file.name)
+            return
+        inp=self.input.get().strip()
+        op=self.operation.get()
+        if not inp:
+            self.output.set('')
+            self.destination.set('No output file · source is checked in place' if op==OPERATIONS[5] else 'Choose source or custom output folder/disk')
+            return
+        if op==OPERATIONS[5]:
+            self.output.set('')
+            self.destination.set('No output file · source is checked in place')
+            return
+        value=automatic_output(inp,op,self.custom_output_dir)
         self.output.set(value)
-        self.destination.set(('Beside source · '+Path(value).name) if value else ('No output file · source is checked in place' if self.operation.get()==OPERATIONS[4] else 'Saved beside your source · existing outputs are kept'))
+        if self.custom_output_dir:
+            self.destination.set(f'Custom disk/folder · {Path(value).name}')
+        else:
+            self.destination.set(f'Beside source · {Path(value).name}')
     def choose_operation(self,value):
         if self.busy:return
         self.operation.set(value);self.changed()
@@ -149,7 +216,7 @@ class NupPanel(AmbientFrame):
         return {KINDS.index(p['kind']) for p in self.catalog} if self.catalog_source==self.source_key() else set()
     def refresh_includes(self):
         available=self.available_kinds()
-        visible=bool(available) and self.operation.get()!=OPERATIONS[4]
+        visible=bool(available) and self.operation.get()!=OPERATIONS[5]
         if visible:self.include_area.pack(fill='x',before=self.report)
         else:self.include_area.pack_forget()
         for col,((name,kinds),control) in enumerate(zip(INCLUDE_GROUPS.items(),self.include_checks)):
@@ -157,7 +224,7 @@ class NupPanel(AmbientFrame):
             self.include_row.grid_columnconfigure(col,weight=int(present),uniform='kinds' if present else '')
             if present:control.grid()
             else:control.grid_remove()
-        if visible and self.operation.get()==OPERATIONS[0] and 1 in available:
+        if visible and self.operation.get() in (OPERATIONS[0],OPERATIONS[2]) and 1 in available:
             self.snapshot_options.pack(fill='x')
             self.snapshot_hint.configure(text='Merge base + newest update; keep base-only files.' if 0 in self.selected_kinds() else 'Keep the newest update snapshot; no base fallback.')
         else:self.snapshot_options.pack_forget()
@@ -166,17 +233,17 @@ class NupPanel(AmbientFrame):
             self.update_controls()
             if self.catalog:self.status.set(f'{sum(KINDS.index(p["kind"]) in self.selected_kinds() for p in self.catalog)} package(s) selected · originals unchanged.')
     def update_controls(self):
-        packing=self.operation.get() in OPERATIONS[:2];folder=self.operation.get()==OPERATIONS[0]
+        packing=self.operation.get() in OPERATIONS[:3];folder=self.operation.get()==OPERATIONS[0]
         self.refresh_includes()
         for op,button in zip(OPERATIONS,self.op_buttons):button.configure(state='disabled' if self.busy else 'normal');button.set_selected(op==self.operation.get())
         for name,button in zip(PRESETS,self.preset_buttons):button.configure(state='normal' if packing and not self.busy else 'disabled');button.set_selected(name==self.preset.get())
         self.large_check.configure(state='normal' if packing and not self.busy else 'disabled')
-        self.snapshot_check.configure(state='normal' if folder and not self.busy and self.includes['Updates'].get() else 'disabled')
-        for control in self.include_checks:control.configure(state='disabled' if self.busy or self.operation.get()==OPERATIONS[4] else 'normal')
+        self.snapshot_check.configure(state='normal' if (folder or self.operation.get()==OPERATIONS[2]) and not self.busy and self.includes['Updates'].get() else 'disabled')
+        for control in self.include_checks:control.configure(state='disabled' if self.busy or self.operation.get()==OPERATIONS[5] else 'normal')
         for control in (self.title_entry,self.art_button,self.clear_art_button):control.configure(state='normal' if folder and not self.busy else 'disabled')
     def pick_input(self):
-        if self.operation.get()==OPERATIONS[0]:path=filedialog.askdirectory(parent=self,title='Choose extracted game or base/updates/dlc bundle')
-        else:path=filedialog.askopenfilename(parent=self,title='Choose package',filetypes=[('NSP packages','*.nsp')] if self.operation.get()==OPERATIONS[1] else [('NUP archives','*.nup')])
+        if self.operation.get()==OPERATIONS[0]:path=native_dialog.ask_directory(parent=self,title='Choose extracted game or base/updates/dlc bundle')
+        else:path=native_dialog.ask_open_file(parent=self,title='Choose package',filetypes=[('NSP packages','*.nsp')] if self.operation.get()==OPERATIONS[1] else [('NUP archives','*.nup')])
         if path:self.input.set(path);self.scan()
     def receive_drop(self,path):
         if self.busy or self._art_editor is not None:return
@@ -188,14 +255,14 @@ class NupPanel(AmbientFrame):
         if path.is_dir():self.operation.set(OPERATIONS[0])
         elif path.suffix.lower()=='.nsp':self.operation.set(OPERATIONS[1])
         elif path.suffix.lower()=='.nup':
-            if self.operation.get() not in OPERATIONS[2:]:self.operation.set(OPERATIONS[4])
+            if self.operation.get() not in OPERATIONS[2:]:self.operation.set(OPERATIONS[5])
         else:self.status.set('Drop an extracted folder, .nsp or .nup.');return
         self.input.set(str(path));self.changed();self.scan()
     def pick_art(self):
         if self.busy or self._art_editor is not None:return
         if self.art_selection:self.set_art(self.art_selection.path,self.art_selection)
         else:
-            path=filedialog.askopenfilename(parent=self,title='Choose NUP artwork',filetypes=ARTWORK_FILETYPES)
+            path=native_dialog.ask_open_file(parent=self,title='Choose NUP artwork',filetypes=ARTWORK_FILETYPES)
             if path:self.set_art(Path(path))
     def set_art(self,path,selection=None):
         try:
@@ -241,9 +308,17 @@ class NupPanel(AmbientFrame):
         if self.busy or self._art_editor is not None:return
         path=self.input.get().strip();op=self.operation.get();verify=self.verify.get();kinds=self.selected_kinds()
         if not path:self.status.set('Choose an input first.');return
-        if op!=OPERATIONS[4] and self.catalog_source!=self.source_key():self.scan();return
-        if op!=OPERATIONS[4] and not kinds:self.status.set('Select at least one of Base, Updates or DLC.');return
-        self.update_destination();output=self.output.get()
+        if op!=OPERATIONS[5] and self.catalog_source!=self.source_key():self.scan();return
+        if op!=OPERATIONS[5] and not kinds:self.status.set('Select at least one of Base, Updates or DLC.');return
+        if not self.custom_output_file and not self.custom_output_dir and not self.output.get().strip():
+            self.update_destination()
+        output=self.output.get().strip()
+        if not output and op!=OPERATIONS[5]:
+            self.status.set('Please select an output destination.');return
+        out_candidate=Path(output)
+        if out_candidate.is_dir() and op!=OPERATIONS[5]:
+            output=automatic_output(path,op,out_candidate)
+            self.output.set(output)
         level=PRESETS[self.preset.get()];large=self.large_raw.get();latest=self.latest_snapshot.get();prepared=self.prepared
         title=self.title_text.get();artwork=self.art_bytes;self.status.set('Preparing operation…')
         candidate=Path(path).resolve()
@@ -253,10 +328,11 @@ class NupPanel(AmbientFrame):
             common={'notify':notify,'cancel':self.cancel_event}
             if op==OPERATIONS[0]:return tools.pack_folder(path,output,level=level,large_raw=large,latest_snapshot=latest,prepared=prepared,verify=verify,include_kinds=kinds,title=title,artwork=artwork,**common)
             if op==OPERATIONS[1]:return tools.nsp_to_nup(path,output,level=level,large_raw=large,verify=verify,include_kinds=kinds,**common)
-            if op==OPERATIONS[2]:
+            if op==OPERATIONS[2]:return tools.nup_to_nup(path,output,level=level,large_raw=large,latest_snapshot=latest,verify=verify,include_kinds=kinds,**common)
+            if op==OPERATIONS[3]:
                 with Archive(path,self.cancel_event) as archive:selection=[i for i,p in enumerate(archive.packages) if p.kind in kinds]
                 return tools.extract(path,output,selection=selection,**common)
-            if op==OPERATIONS[3]:return tools.nup_to_nsp(path,output,include_kinds=kinds,verify=verify,**common)
+            if op==OPERATIONS[4]:return tools.nup_to_nsp(path,output,include_kinds=kinds,verify=verify,**common)
             return tools.inspect(path,verify=verify,**common)
         self.worker(call,'done')
     def show_report(self,data):

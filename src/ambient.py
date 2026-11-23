@@ -1,11 +1,12 @@
 """Quiet, bounded-cost ambient light behind the native Tk interface."""
-import math
-import time
 import weakref
 import tkinter as tk
 from PIL import Image, ImageOps, ImageTk
 
-BASE = '#0e1726'
+BASE = '#141414'
+# The flat theme paints no light field: native widget backgrounds already match,
+# so the ambient image uploads are skipped entirely.
+FLAT = True
 
 
 class AmbientBackground:
@@ -13,14 +14,18 @@ class AmbientBackground:
 
     Controls keep their native windows, focus and input behavior. The light is
     sampled behind them, so rounded corners blend into the same background.
-    Foreground motion runs independently at 60 Hz; this slow field needs 12 Hz.
+
+    The field is static: it is rendered once and then only when the window
+    size changes (debounced). Continuously re-uploading a window-sized image
+    kept a Tk event loop busy at 12 Hz for a purely decorative effect and was
+    the largest idle CPU cost, so motion here is deliberately avoided.
     """
     def __init__(self, root, motion):
         self.root = root
         self.motion = motion
         self.targets = weakref.WeakSet()
-        self.started = time.perf_counter()
         self.job = None
+        self._resize_job = None
         self.closed = False
         self.frame = None
         self.photo = None
@@ -32,7 +37,8 @@ class AmbientBackground:
         self.mask = radial.point([round((x/255)**2 * 115) for x in range(256)])
         self.mask = self.mask.resize((200, 158), Image.Resampling.BILINEAR)
         self.colors = ('#204a79', '#303463')
-        self.job = root.after(20, self.tick)
+        root.bind('<Configure>', self.resized, add='+')
+        self.job = root.after(20, self.render)
 
     def register(self, widget):
         self.targets.add(widget)
@@ -60,46 +66,62 @@ class AmbientBackground:
         widget._ambient_geometry=geometry
         widget.tag_lower('ambient')
 
-    def tick(self):
-        self.job = None
-        if self.closed:
+    def resized(self, event):
+        if self.closed or event.widget is not self.root:
             return
-        visible = self.root.state() not in ('iconic', 'withdrawn')
+        if self._resize_job is not None:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except tk.TclError:
+                pass
+        # One render after a drag settles instead of one per Configure event.
+        self._resize_job = self.root.after(120, self.render)
+
+    def render(self):
+        self.job = None
+        self._resize_job = None
+        if self.closed or not self.root.winfo_exists():
+            return
         width, height = self.root.winfo_width(), self.root.winfo_height()
-        needs_size = self.frame is None or self.frame.size != (width, height)
-        moving = self.motion.enabled and visible
-        if visible and (moving or needs_size):
-            t = (time.perf_counter()-self.started) / 24 if self.motion.enabled else 0
+        if width < 2 or height < 2:
+            return
+        if self.frame is not None and self.frame.size == (width, height):
+            return
+        if FLAT:
+            frame = Image.new('RGB', (width, height), BASE)
+        else:
             field = Image.new('RGB', (160, 120), BASE)
-            positions = ((-78+22*math.sin(t), -80+15*math.cos(t*.7)),
-                         (45+22*math.cos(t*.8), 20+18*math.sin(t*.6)))
+            positions = ((-78, -80), (45, 20))
             for color, (x, y) in zip(self.colors, positions):
                 layer = Image.new('RGB', self.mask.size, color)
                 field.paste(layer, (round(x), round(y)), self.mask)
-            self.frame = field.resize((max(1,width), max(1,height)), Image.Resampling.BILINEAR)
-            if self.photo is None or self.photo.width()!=width or self.photo.height()!=height:
-                self.photo=ImageTk.PhotoImage(self.frame,master=self.canvas)
-            else:
-                self.photo.paste(self.frame)
-            self.frame_count += 1
-            # The root-sized canvas and small exposed control backgrounds use
-            # the same image; panels are opaque and never repainted by this loop.
-            self.paint(self.canvas)
-            for widget in tuple(self.targets):
-                try:
-                    if widget.winfo_ismapped():
-                        self.paint(widget)
-                except tk.TclError:
-                    self.targets.discard(widget)
-        slow = (getattr(self.root, 'busy', False) or getattr(self.root, 'scanning', False)
-                or getattr(getattr(self.root, 'dlc_panel', None), 'busy', False))
-        self.job = self.root.after(250 if slow or not visible or not self.motion.enabled else 83, self.tick)
+            frame = field.resize((width, height), Image.Resampling.BILINEAR)
+        self.frame = frame
+        if self.photo is None or self.photo.width() != width or self.photo.height() != height:
+            self.photo = ImageTk.PhotoImage(self.frame, master=self.canvas)
+        else:
+            self.photo.paste(self.frame)
+        self.frame_count += 1
+        # The root-sized canvas and small exposed control backgrounds use the
+        # same image; panels are opaque and never need repainting.
+        self.paint(self.canvas)
+        for widget in tuple(self.targets):
+            try:
+                if widget.winfo_ismapped():
+                    self.paint(widget)
+            except tk.TclError:
+                self.targets.discard(widget)
 
     def stop(self):
         self.closed = True
-        if self.job is not None:
-            self.root.after_cancel(self.job)
-            self.job = None
+        for job in (self.job, self._resize_job):
+            if job is not None:
+                try:
+                    self.root.after_cancel(job)
+                except tk.TclError:
+                    pass
+        self.job = None
+        self._resize_job = None
         self.targets.clear()
 
 
@@ -119,7 +141,7 @@ class AmbientFrame(tk.Canvas):
 
 class AmbientLabel(AmbientFrame):
     """Canvas text keeps the light continuous behind header/footer captions."""
-    def __init__(self, parent, text='', textvariable=None, fg='#edf4ff',
+    def __init__(self, parent, text='', textvariable=None, fg='#f0f0f0',
                  font=None, anchor='w', justify='left', wraplength=0, **kw):
         super().__init__(parent, **kw)
         self.variable = textvariable

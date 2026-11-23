@@ -14,7 +14,7 @@ LARGE_FILE=256*1024*1024
 MAX_ZSTD_WINDOW=1024*1024*1024  # The backend enforces this value in BYTES.
 NONE=0xffffffff
 KINDS=('base','update','addon','addon_update','system')
-PRESETS={'Fast':1,'Balanced':3,'Smaller':9}
+PRESETS={'None':0,'Fast':1,'Balanced':3,'Smaller':9}
 SUPER=struct.Struct('<4sHHQQ32sQQII16s32s')
 TOC=struct.Struct('<4sIQQQQQ')
 PKG=struct.Struct('<QIIIIBBHIQI20s')
@@ -133,7 +133,7 @@ def dedup_stream(source,prefixes,seen,cancel,on_read):
     with source.opener() as stream:yield stream,b'',digest,None
 
 def write_extent(out,source,stream,first,level,large_raw,cancel,on_read,known_digest=None):
-    start=out.tell();codec=not (large_raw and source.size>LARGE_FILE) and source.size>0
+    start=out.tell();codec=bool(level) and not (large_raw and source.size>LARGE_FILE) and source.size>0
     h=hashlib.sha256();count=0;failed=False
     try:compressor=zstd.ZstdCompressor(level=level,write_content_size=True).compressobj(size=source.size) if codec else None
     except zstd.ZstdError:compressor=None;codec=False
@@ -163,7 +163,7 @@ def write_extent(out,source,stream,first,level,large_raw,cancel,on_read,known_di
 
 def pack(packages,output,level=3,large_raw=True,verify=True,notify=lambda *a:None,cancel=None,source_guard=None):
     """Stream files once; re-read only when compression does not save space."""
-    validate_packages(packages);require(level in (1,3,9),'Choose compression level 1, 3 or 9.')
+    validate_packages(packages);require(level in (0,1,3,9),'Choose compression level 0, 1, 3 or 9.')
     output=Path(output).absolute();require(output.suffix.lower()=='.nup','Output must end in .nup.')
     require(not output.exists(),'Output already exists; choose a new filename.')
     output.parent.mkdir(parents=True,exist_ok=True)
@@ -293,7 +293,7 @@ class Archive:
             require(root<nd and (ex==NONE or ex<nd) and (rom==NONE or rom<nd) and not r and not r2 and not any(r3),'Invalid NUP package record.')
             require((mo==0)==(ms==0),'Invalid metadata extent.')
             require(ms<=32*1024*1024,'Package metadata exceeds 32 MiB.')
-            if ms:require(bo<=mo and ms<=fs-mo,'Invalid package metadata bounds.');regions.append((mo,mo+ms,('meta',i)))
+            if ms:require(to+ts<=mo and ms<=fs-mo,'Invalid package metadata bounds.');regions.append((mo,mo+ms,('meta',i)))
             p=Package(tid,ver,kind,metadata=parse_tlvs(self.read_at(mo,ms)) if ms else [],flags=pflags)
             self.packages.append(p);records.append((root,ex,rom))
         validate_packages(self.packages)

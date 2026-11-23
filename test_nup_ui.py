@@ -26,9 +26,9 @@ class NupInterfaceTests(unittest.TestCase):
         app.receive_drop([str(self.game)]);self.until(lambda:not p.busy);self.assertEqual(len(p.catalog),1)
         out=self.root/'Game.nup';p.start();self.assertTrue(p.busy);app.show_tab('game');self.assertEqual(app.active_tab,'nup')
         self.until(lambda:not p.busy);self.assertTrue(out.exists());self.assertIn('Bytes saved',p.report.get('1.0','end'))
-        p.operation.set(OPERATIONS[4]);p.changed();app.receive_drop([str(out)]);self.until(lambda:not p.busy);p.start();self.until(lambda:not p.busy)
+        p.operation.set(OPERATIONS[5]);p.changed();app.receive_drop([str(out)]);self.until(lambda:not p.busy);p.start();self.until(lambda:not p.busy)
         self.assertIn('Integrity: verified',p.report.get('1.0','end'))
-        p.operation.set(OPERATIONS[2]);p.changed();p.scan();self.until(lambda:not p.busy)
+        p.operation.set(OPERATIONS[3]);p.changed();p.scan();self.until(lambda:not p.busy)
         destination=self.root/'Game-extracted';p.start();self.until(lambda:not p.busy)
         self.assertEqual((destination/'base/exefs/main.npdm').read_bytes(),(self.game/'exefs/main.npdm').read_bytes())
         app.show_tab('game');self.pump();self.assertTrue(app.content_area.winfo_ismapped());app.show_tab('dlc');self.pump();self.assertTrue(app.dlc_panel.winfo_ismapped())
@@ -40,10 +40,10 @@ class NupInterfaceTests(unittest.TestCase):
         bundle=self.root/'Bundle';snapshot(bundle/'base',{'base':b'base'})
         addon=bundle/'dlc/0400111122221001/romfs';addon.mkdir(parents=True);(addon/'addon').write_bytes(b'dlc')
         archive=self.root/'Bundle.nup';nt.pack_folder(bundle,archive,latest_snapshot=False)
-        p.operation.set(OPERATIONS[2]);p.input.set(str(archive));p.changed()
+        p.operation.set(OPERATIONS[3]);p.input.set(str(archive));p.changed()
         p.scan();self.until(lambda:not p.busy)
         p.includes['Base'].set(False);p.includes['Updates'].set(False)
-        with patch('nup_panel.filedialog.askdirectory',side_effect=AssertionError('Must not prompt')):
+        with patch('nup_panel.native_dialog.ask_directory',side_effect=AssertionError('Must not prompt')):
             p.start();self.until(lambda:not p.busy)
         output=self.root/'Bundle-extracted';self.assertTrue(output.is_dir(),p.status.get())
         self.assertFalse((output/'base').exists())
@@ -60,7 +60,7 @@ class NupInterfaceTests(unittest.TestCase):
             if isinstance(widget,tk.Label):self.assertGreaterEqual(widget.winfo_height(),widget.winfo_reqheight())
         for op in OPERATIONS:
             p.operation.set(op);p.changed();self.pump()
-            self.assertEqual(p.preset_buttons[0].enabled,op in OPERATIONS[:2])
+            self.assertEqual(p.preset_buttons[0].enabled,op in OPERATIONS[:3])
         self.assertFalse(self.errors)
 
     def test_source_specific_choices_and_stale_scan_cleanup(self):
@@ -82,7 +82,7 @@ class NupInterfaceTests(unittest.TestCase):
             if p.snapshot_check.type(item)=='text':self.assertLessEqual(p.snapshot_check.bbox(item)[2],p.snapshot_check.winfo_width())
         p.includes['Base'].set(False);self.assertIn('no base fallback',p.snapshot_hint.cget('text'));p.includes['Base'].set(True)
         archive=self.root/'Bundle.nup';nt.pack_folder(bundle,archive,latest_snapshot=False)
-        p.operation.set(OPERATIONS[2]);p.input.set(str(archive));p.changed()
+        p.operation.set(OPERATIONS[3]);p.input.set(str(archive));p.changed()
         self.assertEqual(shown(),set());p.scan();self.until(lambda:not p.busy)
         self.assertEqual(shown(),{'Base','Updates','DLC'});self.assertFalse(p.snapshot_check.winfo_ismapped())
         p.receive_drop(addon.parent);self.until(lambda:not p.busy)
@@ -90,6 +90,23 @@ class NupInterfaceTests(unittest.TestCase):
         p.input.set(str(self.root/'missing'));self.assertEqual(shown(),set())
         p.scan();self.until(lambda:not p.busy);self.assertEqual(shown(),set())
         p.input.set('');self.assertEqual(shown(),set());self.assertFalse(self.errors)
+
+    def test_nup_to_nup_uncompressed(self):
+        import nup_format as nf, nup_tools as nt
+        p=self.app.nup_panel
+        comp_out=self.root/'OriginalComp.nup'
+        nt.pack_folder(self.game,comp_out,level=3)
+        p.operation.set(OPERATIONS[2]);p.input.set(str(comp_out));p.preset.set('None');p.changed()
+        p.scan();self.until(lambda:not p.busy)
+        raw_out=self.root/'Game-raw.nup'
+        p.output.set(str(raw_out))
+        p.start();self.until(lambda:not p.busy)
+        self.assertTrue(raw_out.exists())
+        with nf.Archive(raw_out) as a:
+            self.assertEqual(a.stats['compressed_files'],0)
+            self.assertGreater(a.stats['raw_files'],0)
+            a.verify()
+        self.assertFalse(self.errors)
 
     def test_automatic_outputs_reveal_and_artwork_crop(self):
         from PIL import Image
@@ -112,7 +129,7 @@ class NupInterfaceTests(unittest.TestCase):
         self.assertIsNotNone(p.art_bytes);self.assertEqual(p.art_button.text,'Edit cover')
         p.title_text.set('Custom NUP title');p.input.set(str(self.game))
         p.scan();self.until(lambda:not p.busy)
-        with patch('nup_panel.filedialog.asksaveasfilename',side_effect=AssertionError('Must not prompt')):
+        with patch('nup_panel.native_dialog.ask_save_file',side_effect=AssertionError('Must not prompt')):
             p.start();self.until(lambda:not p.busy)
             first=self.root/'Game.nup';self.assertTrue(first.exists(),p.status.get());original=first.read_bytes()
             with nf.Archive(first) as a:
