@@ -20,8 +20,9 @@ files stream directly from the decrypted NCA sections into the NUP writer, with
 no intermediate extracted folder. **Convert to .NSP** (or `--to-nsp`) does the
 same into a plaintext NSP Box `.nsp` (game only; DLC stays in the folder flow). Payloads are stored raw (no compression). An update is merged into the base RomFS,
 so the NUP holds one current snapshot rather than separate update packages.
-Plaintext emulator NSPs need no keys. Compressed NSZ/XCZ, NCA0 and personalised
-tickets are not supported; decompress those first.
+Encrypted **NSZ** input is supported too: `.ncz` entries are decompressed and
+re-encrypted on the fly, so NSZ → NUP/NSP follows the same one-pass path. Plaintext
+emulator NSPs need no keys. XCZ, NCA0 and personalised tickets are not supported.
 
 Version 4.0 adds NUP Tools with Fast/Balanced/Smaller compression, source-aware
 Base / Updates / DLC selection, a smaller latest-game snapshot option, custom title

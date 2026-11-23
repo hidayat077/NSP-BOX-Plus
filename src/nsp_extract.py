@@ -4,9 +4,10 @@ Needs your own prod.keys (and title.keys or the NSP's tickets). Plaintext NSPs
 need no keys. This is a Python port of the NCA/PFS0/RomFS/BKTR reader logic; it
 does not include Nintendo code, keys or content.
 """
-# shortcut: retail NSP/XCI, common tickets, BKTR updates and DLC only; NSZ/XCZ/NCZ,
+# shortcut: retail NSP/NSZ/XCI, common tickets, BKTR updates and DLC only; XCZ,
 # NCA0, AES-XTS sections, sparse/compressed NCAs and personalised tickets are not
-# handled. Upgrade by adding zstd decompression and a full LibHac-equivalent reader.
+# handled. Non-block NCZ is decompressed into a spooled temp file once per read
+# pass; block NCZ (the common form) is decompressed per block without a temp file.
 from pathlib import Path
 import json
 import shutil
@@ -21,6 +22,10 @@ except ImportError as exc:  # pragma: no cover - dependency guard
 
 CHUNK = 1 << 20
 NCA_MAGICS = (b'NCA3', b'NCA2')
+
+# Non-block NCZ needs one sequential decompression into a spool. Keep that
+# spool on the output disk: /tmp is often a small-quota tmpfs.
+_SPOOL_DIR = None
 
 
 class ExtractError(Exception):
@@ -398,6 +403,144 @@ def romfs_entries(image):
     return out
 
 
+# --------------------------------------------------------------------------- NCZ
+
+class _NczSection:
+    def __init__(self, offset, size, crypto_type, key, counter, stream):
+        self.offset, self.size, self.crypto_type = offset, size, crypto_type
+        self.key, self.counter, self.stream = key, counter, stream
+
+
+class NczSource(Source):
+    """Random-access view of a decompressed NCZ, re-encrypted as the original NCA."""
+    def __init__(self, source):
+        import zstandard
+
+        self.source = source
+        if source.size < 0x4000 + 24:
+            raise ExtractError('NCZ file is too small')
+        marker = source.read(0x4000, 24)
+        if marker[:8] != b'NCZSECTN':
+            raise ExtractError('Not a supported NCZ file')
+        count = u64(marker, 8)
+        if not 0 < count <= 4096:
+            raise ExtractError('Corrupt NCZ section count')
+        table = source.read(0x4010, count * 64 + 16)
+        sections = []
+        stream_size = 0
+        for i in range(count):
+            at = i * 64
+            sec = _NczSection(u64(table, at), u64(table, at + 8), u64(table, at + 16),
+                              bytes(table[at + 32:at + 48]), bytes(table[at + 48:at + 64]), stream_size)
+            if sec.size <= 0 or sec.offset + sec.size > (1 << 63):
+                raise ExtractError('Corrupt NCZ section')
+            sections.append(sec)
+            stream_size += sec.size
+        self.sections = sections
+        self.stream_size = stream_size
+        self.size = max(s.offset + s.size for s in sections)
+        pos = 0x4010 + count * 64
+        magic = source.read(pos, 8)
+        self._zstd = zstandard.ZstdDecompressor()
+        self._spool = None
+        self._cache = (-1, b'')
+        if magic == b'NCZBLOCK':
+            head = source.read(pos, 24)
+            exponent = head[11]
+            blocks = u32(head, 12)
+            if not 14 <= exponent <= 32 or not 0 < blocks <= (1 << 20):
+                raise ExtractError('Corrupt NCZBLOCK header')
+            sizes = [u32(source.read(pos + 24 + 4 * i, 4), 0) for i in range(blocks)]
+            self.block_size = 1 << exponent
+            self.block_sizes = sizes
+            self.block_start = pos + 24 + 4 * blocks
+        else:
+            self.block_sizes = None
+            self.stream_start = pos
+
+    def _block(self, index):
+        if index < 0 or index >= len(self.block_sizes):
+            raise ExtractError('NCZ block index out of range')
+        cached_index, cached = self._cache
+        if cached_index == index:
+            return cached
+        offset = self.block_start + sum(self.block_sizes[:index])
+        packed = self.source.read(offset, self.block_sizes[index])
+        expected = min(self.block_size, self.stream_size - index * self.block_size)
+        plain = packed if len(packed) >= expected else self._zstd.decompress(packed)
+        if len(plain) != expected:
+            raise ExtractError('NCZ block decompressed to an unexpected size')
+        self._cache = (index, plain)
+        return plain
+
+    def _spooled(self):
+        if self._spool is None:
+            import tempfile
+            spool = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024, dir=_SPOOL_DIR)
+            dec = self._zstd.decompressobj()
+            done = 0
+            remaining = self.source.size - self.stream_start
+            while remaining:
+                n = min(4 * 1024 * 1024, remaining)
+                out = dec.decompress(self.source.read(self.stream_start + done, n))
+                if out:
+                    spool.write(out)
+                done += n
+                remaining -= n
+            tail = dec.flush()
+            if tail:
+                spool.write(tail)
+            spool.flush()
+            self._spool = spool
+        return self._spool
+
+    def _stream(self, pos, size):
+        out = bytearray()
+        while size:
+            if self.block_sizes is None:
+                spool = self._spooled()
+                spool.seek(pos)
+                chunk = spool.read(size)
+                if not chunk:
+                    break
+                out += chunk
+                pos += len(chunk)
+                size -= len(chunk)
+            else:
+                index = pos // self.block_size
+                if index >= len(self.block_sizes):
+                    break
+                block = self._block(index)
+                at = pos % self.block_size
+                take = min(size, len(block) - at)
+                if take <= 0:
+                    break
+                out += block[at:at + take]
+                pos += take
+                size -= take
+        return bytes(out)
+
+    def read(self, pos, size):
+        if pos < 0 or size < 0 or pos + size > self.size:
+            raise ExtractError('Read past end of NCZ image')
+        out = bytearray()
+        if pos < 0x4000:
+            n = min(size, 0x4000 - pos)
+            out += self.source.read(pos, n)
+            pos += n
+            size -= n
+        for sec in self.sections:
+            lo = max(pos, sec.offset)
+            hi = min(pos + size, sec.offset + sec.size)
+            if lo >= hi:
+                continue
+            plain = self._stream(sec.stream + lo - sec.offset, hi - lo)
+            if sec.crypto_type in (3, 4):
+                plain = ctr_bytes(sec.key, sec.counter[:8], lo, plain)
+            out += plain
+        return bytes(out)
+
+
 # --------------------------------------------------------------------------- container
 
 class Container:
@@ -405,6 +548,7 @@ class Container:
         self.path = Path(path)
         self.source = FileSource(self.path, 0, self.path.stat().st_size)
         self.items = []
+        self._ncz = []
         self._detect()
 
     def _detect(self):
@@ -414,7 +558,7 @@ class Container:
                 self.items.append((name, off, size))
         elif head[0x100:0x104] == b'HEAD':
             self._xci()
-        elif self.path.suffix.lower() == '.nca':
+        elif self.path.suffix.lower() in ('.nca', '.ncz'):
             self.items.append((self.path.name, 0, self.source.size))
         else:
             raise ExtractError('Unsupported file: expected NSP, XCI or NCA')
@@ -463,11 +607,16 @@ class Container:
     def ncas(self, keys, errors=None, cancel=None):
         out = []
         for name, off, size in self.items:
-            if not name.lower().endswith('.nca'):
+            lower = name.lower()
+            if not (lower.endswith('.nca') or lower.endswith('.ncz')):
                 continue
             check_cancel(cancel)
             try:
-                out.append(Nca(self.source.slice(off, size), keys, name))
+                raw = self.source.slice(off, size)
+                if lower.endswith('.ncz'):
+                    raw = NczSource(raw)
+                    self._ncz.append(raw)
+                out.append(Nca(raw, keys, name))
             except InterruptedError:
                 raise
             except Exception as exc:  # bad keys or unsupported NCA: report, keep going
@@ -476,6 +625,9 @@ class Container:
         return out
 
     def close(self):
+        for view in self._ncz:
+            if view._spool is not None:
+                view._spool.close()
         self.source.close()
 
 
@@ -776,7 +928,9 @@ def extract(path, output, prod_keys=None, title_keys=None, update=None, dlc=(),
     Returns a small result dict. The output is staged beside its final location
     and renamed only on success, so a cancelled run never leaves a partial game.
     """
+    global _SPOOL_DIR
     output = Path(output).absolute()
+    _SPOOL_DIR = str(output.parent)
     if output.exists():
         raise ExtractError('Choose a new output folder; existing files are never overwritten.')
     check_cancel(cancel)
@@ -917,7 +1071,9 @@ def nsp_to_nup(path, output, prod_keys=None, title_keys=None, update=None, dlc=(
     """
     import nup_format
 
+    global _SPOOL_DIR
     output = Path(output).absolute()
+    _SPOOL_DIR = str(output.parent)
     if output.suffix.lower() != '.nup':
         raise ExtractError('NUP output must end in .nup')
     if output.exists():
@@ -974,7 +1130,9 @@ def nsp_to_nsp(path, output, prod_keys=None, title_keys=None, update=None,
     import uuid
     import container_format as fmt
 
+    global _SPOOL_DIR
     output = Path(output).absolute()
+    _SPOOL_DIR = str(output.parent)
     if output.suffix.lower() != '.nsp':
         raise ExtractError('NSP output must end in .nsp')
     if output.exists():
@@ -1073,7 +1231,7 @@ def default_keys():
 def cli_main(argv):
     import argparse
     parser = argparse.ArgumentParser(description='Extract an encrypted NSP into an extracted game folder.')
-    parser.add_argument('--input', type=Path, required=True, help='Base NSP/XCI (or NCA).')
+    parser.add_argument('--input', type=Path, required=True, help='Base NSP/NSZ/XCI (or NCA/NCZ).')
     parser.add_argument('--output', type=Path, required=True, help='New output folder.')
     parser.add_argument('--update', type=Path, help='Optional update NSP to merge on top.')
     parser.add_argument('--dlc', type=Path, action='append', default=[], help='DLC NSP (repeatable).')

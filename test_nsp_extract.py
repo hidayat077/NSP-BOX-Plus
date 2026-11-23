@@ -6,6 +6,8 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
+import zstandard
 
 sys.path.insert(0, str(Path(__file__).parent / 'src'))
 import container_format as fmt
@@ -109,6 +111,41 @@ def encrypted_nsp(root):
     nsp = root / 'encrypted.nsp'
     nsp.write_bytes(b''.join(fmt.package([(n, b) for n, b in ncabs]).chunks(1 << 20)))
     return nsp, exefs, romfs, prod
+
+
+def nsz_from_nsp(nsp, prod, block=False):
+    """Build a block-free NSZ from an encrypted NSP for round-trip tests."""
+    keys = nx.Keys.load(prod)
+    container = nx.Container(nsp)
+    entries = []
+    try:
+        for nca in container.ncas(keys):
+            head = bytearray(nca.source.read(0, 0x4000))
+            records = bytearray()
+            stream = bytearray()
+            sections = [s for s in nca.sections if s.exists]
+            for s in sections:
+                plain = nca.open_section(s).read(0, s.size)
+                records += struct.pack('<QQQQ', s.start, s.size, 3, 0)
+                records += nca.content_key() + nca._upper(s) + bytes(8)
+                stream += plain
+            meta = b'NCZSECTN' + struct.pack('<Q', len(sections)) + bytes(records)
+            if block:
+                size = 1 << 14
+                parts = [bytes(stream)[i:i + size] for i in range(0, len(stream), size)]
+                packed = [zstandard.ZstdCompressor().compress(p) for p in parts]
+                meta += (b'NCZBLOCK' + bytes([0, 0, 0, 14]) + struct.pack('<IQ', len(parts), len(stream))
+                         + b''.join(struct.pack('<I', len(p)) for p in packed))
+                payload = b''.join(packed)
+            else:
+                payload = zstandard.ZstdCompressor().compress(bytes(stream))
+            ncz = bytes(head) + meta + payload
+            entries.append((Path(nca.name).stem + '.ncz', ncz))
+    finally:
+        container.close()
+    path = nsp.with_suffix('.nsz')
+    path.write_bytes(b''.join(fmt.filesystem(entries).chunks(1 << 20)))
+    return path
 
 
 def plaintext_nsp(root):
@@ -220,6 +257,57 @@ class PlaintextTests(unittest.TestCase):
             self.assertEqual((check / 'exefs' / 'main').read_bytes(), b'EXEFS-MAIN-CONTENT' * 8)
             self.assertEqual((check / 'romfs' / 'dir' / 'two.bin').read_bytes(), b'romfs-data' * 100)
             self.assertFalse(list(root.glob('.nsp2nup-*')))
+
+    def test_nsz_to_nsp_and_nup(self):
+        import nup_tools
+        import verify_format as vf
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nsp, exefs, romfs, prod = encrypted_nsp(root)
+            nsz = nsz_from_nsp(nsp, prod)
+            out_nsp = root / 'from-nsz.nsp'
+            nx.nsp_to_nsp(nsz, out_nsp, prod_keys=prod)
+            parts = vf.partition(out_nsp.read_bytes())
+            program = next(v for v in parts.values() if len(v) >= 0xc00 and v[0x205] == 0)
+            _, _, sections = vf.nca_sections(program)
+            packed = vf.partition(next(b for k, b in sections if k == 'pfs'))
+            self.assertEqual(bytes(packed['main']), (exefs / 'main').read_bytes())
+
+            out_nup = root / 'from-nsz.nup'
+            nx.nsp_to_nup(nsz, out_nup, prod_keys=prod)
+            nup_tools.extract(out_nup, root / 'check')
+            self.assertEqual((root / 'check' / 'base' / 'romfs' / 'dir' / 'two.bin').read_bytes(),
+                             (romfs / 'dir' / 'two.bin').read_bytes())
+
+    def test_ncz_spool_uses_output_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nsp, _, _, prod = encrypted_nsp(root)
+            nsz = nsz_from_nsp(nsp, prod)
+            seen = []
+            real = tempfile.SpooledTemporaryFile
+
+            def tracked(*args, **kwargs):
+                seen.append(kwargs.get('dir'))
+                return real(*args, **kwargs)
+
+            with patch('nsp_extract.tempfile.SpooledTemporaryFile', side_effect=tracked):
+                nx.nsp_to_nsp(nsz, root / 'spool.nsp', prod_keys=prod)
+            self.assertIn(str(root), seen)
+
+    def test_block_nsz_to_nsp(self):
+        import verify_format as vf
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nsp, exefs, _, prod = encrypted_nsp(root)
+            nsz = nsz_from_nsp(nsp, prod, block=True)
+            out = root / 'blocked.nsp'
+            nx.nsp_to_nsp(nsz, out, prod_keys=prod)
+            parts = vf.partition(out.read_bytes())
+            program = next(v for v in parts.values() if len(v) >= 0xc00 and v[0x205] == 0)
+            _, _, sections = vf.nca_sections(program)
+            packed = vf.partition(next(b for k, b in sections if k == 'pfs'))
+            self.assertEqual(bytes(packed['main']), (exefs / 'main').read_bytes())
 
     def test_encrypted_nsp_to_nsp(self):
         import verify_format as vf

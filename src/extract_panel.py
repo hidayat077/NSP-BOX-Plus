@@ -154,7 +154,7 @@ class ExtractPanel(AmbientFrame):
                 variable.set(', '.join(value))
         else:
             value = native_dialog.ask_open_file(parent=self.app, title=title,
-                                               filetypes=[('Packages and key files', '*.nsp *.xci *.keys')])
+                                               filetypes=[('Packages and key files', '*.nsp *.nsz *.xci *.ncz *.keys')])
             if value:
                 variable.set(value)
 
