@@ -4,6 +4,7 @@
 
 - Cancellation now interrupts NSZ/NCZ decompression immediately, in both block and streamed NCZ layouts. Large block NCZ files also use precomputed block offsets instead of re-summing the size table on every read.
 - The Extract panel keeps a chosen output folder when the source file or conversion mode changes, so results no longer fall back beside the ROM.
+- Repeated NUP builds automatically select the next free filename instead of failing on an existing output.
 
 ## 4.0.0 — Meet NUP
 

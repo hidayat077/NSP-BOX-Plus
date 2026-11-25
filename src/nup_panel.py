@@ -310,8 +310,18 @@ class NupPanel(AmbientFrame):
         if not path:self.status.set('Choose an input first.');return
         if op!=OPERATIONS[5] and self.catalog_source!=self.source_key():self.scan();return
         if op!=OPERATIONS[5] and not kinds:self.status.set('Select at least one of Base, Updates or DLC.');return
-        if not self.custom_output_file and not self.custom_output_dir and not self.output.get().strip():
-            self.update_destination()
+        if not self.custom_output_file:
+            current=self.output.get().strip()
+            chosen=Path(current) if current else None
+            if not current:
+                self.update_destination()
+            elif chosen.is_dir():
+                self.output.set(automatic_output(path,op,chosen))
+            elif chosen.exists() or self.custom_output_dir:
+                # A previous build or the chosen folder already occupies this
+                # filename: pick the next free one instead of failing to write.
+                destination=self.custom_output_dir or chosen.parent
+                self.output.set(automatic_output(path,op,destination))
         output=self.output.get().strip()
         if not output and op!=OPERATIONS[5]:
             self.status.set('Please select an output destination.');return
