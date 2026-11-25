@@ -1,6 +1,6 @@
 # Publishing releases
 
-Downloads are available on the repository's [Releases page](https://github.com/smarkyie/NSP-Box/releases). Each release includes a portable Windows ZIP, a source ZIP and SHA-256 checksums.
+Downloads are available on the repository's [Releases page](https://github.com/smarkyie/NSP-Box/releases). Each release includes a portable Windows ZIP, a Linux x64 AppImage, a source ZIP and SHA-256 checksums.
 
 ## Publish a version
 
@@ -8,6 +8,7 @@ Downloads are available on the repository's [Releases page](https://github.com/s
 2. Open **Actions → Build and release Windows app → Run workflow**, select `main`, and run it. Alternatively, push a matching version tag.
 3. The workflow runs the synthetic tests, builds the portable EXE, and checks PNG/WEBP/ICO/AVIF artwork with NSP in single-file and package-folder modes. It then assembles the application, source, notices and checksums.
 4. A successful job publishes a release tagged at its source commit. Existing releases are not overwritten; use a new version for updated downloads.
+5. Open **Actions → Build and publish Linux AppImage → Run workflow**, select `main` and enter the release tag (for example `v4.0.1`). The Ubuntu job builds the frozen Linux binary, verifies NSP/NUP output, uploads `NSP-Box-v<version>-Linux-x64.AppImage` to that release and refreshes `SHA256SUMS.txt`.
 
 Release notes include lawful-use and ownership notices and the current emulator-patch instructions, memory-setting guidance and companion workaround for unpatched builds. Keep these notices and the required dependency licenses with redistributed copies.
 
