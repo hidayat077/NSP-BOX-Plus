@@ -54,11 +54,14 @@ jobs:
           from pathlib import Path
           from PIL import Image
           source = Path('src/assets/icons/app.png')
-          target = Path('AppDir/usr/share/icons/hicolor/256x256/apps/nsp-box.png')
+          targets = (Path('AppDir/nsp-box.png'),
+                     Path('AppDir/usr/share/icons/hicolor/256x256/apps/nsp-box.png'))
           with Image.open(source) as image:
-              image.convert('RGBA').resize((256, 256), Image.Resampling.LANCZOS).save(target)
+              icon = image.convert('RGBA').resize((256, 256), Image.Resampling.LANCZOS)
+              for target in targets:
+                  icon.save(target)
           PY
-          cat > AppDir/usr/share/applications/nsp-box.desktop <<'EOF'
+          cat > AppDir/nsp-box.desktop <<'EOF'
           [Desktop Entry]
           Type=Application
           Name=NSP Box
@@ -68,12 +71,13 @@ jobs:
           Categories=Utility;
           Terminal=false
           EOF
+          cp AppDir/nsp-box.desktop AppDir/usr/share/applications/nsp-box.desktop
           cat > AppDir/AppRun <<'EOF'
           #!/bin/sh
           exec "$APPDIR/usr/bin/NSP-Box" "$@"
           EOF
           chmod +x AppDir/AppRun
-          ln -sf usr/share/icons/hicolor/256x256/apps/nsp-box.png AppDir/.DirIcon
+          cp AppDir/nsp-box.png AppDir/.DirIcon
       - name: Build AppImage
         shell: bash
         run: |
