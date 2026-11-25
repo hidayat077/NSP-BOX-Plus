@@ -39,6 +39,7 @@ class ExtractPanel(AmbientFrame):
         self.prod_keys = tk.StringVar(self, value=str(nsp_extract.default_keys() or ''))
         self.title_keys = tk.StringVar(self)
         self.output = tk.StringVar(self)
+        self.custom_output = None
         self.status = tk.StringVar(self, value='Choose a base NSP to begin.')
         self._last_stage = None
         self._last_log_time = 0.0
@@ -161,11 +162,21 @@ class ExtractPanel(AmbientFrame):
     def pick_output(self):
         if self.busy:
             return
-        current = Path(self.output.get()).parent if self.output.get() else None
+        current = self.custom_output or (Path(self.output.get()).parent if self.output.get() else None)
         folder = native_dialog.ask_directory(parent=self.app, title='Choose output folder or disk',
                                          initialdir=str(current) if current else None)
         if folder:
-            self.output.set(automatic_output(self.input.get() or 'game', folder, self.mode.get()))
+            self.custom_output = Path(folder)
+            self.update_destination()
+
+    def update_destination(self):
+        value = self.input.get().strip()
+        if not value:
+            self.output.set('')
+            self.status.set('Choose a base NSP to begin.')
+            return
+        self.output.set(automatic_output(value, self.custom_output, self.mode.get()))
+        self.status.set('Ready.')
 
     def mode_changed(self, *args):
         self.changed()
@@ -173,10 +184,7 @@ class ExtractPanel(AmbientFrame):
     def changed(self, *args):
         if self.busy:
             return
-        value = self.input.get().strip()
-        mode = self.mode.get()
-        self.output.set(automatic_output(value, mode=mode) if value else '')
-        self.status.set('Ready.' if value else 'Choose a base NSP to begin.')
+        self.update_destination()
 
     def set_busy(self, value):
         self.busy = value

@@ -12,7 +12,7 @@ DOCS=('README.md','BUILD.md','TECHNICAL_NOTES.md','PERFORMANCE_NOTES.md','CHANGE
       'LICENSE.txt','THIRD_PARTY_NOTICES.md','RELEASE_VALIDATION.md','GITHUB_RELEASES.md','DISCLAIMER.md','EMULATOR_PATCH.md','DLC.md','NUP.md')
 SOURCE=('Packager.spec','app.ico','requirements-build.txt','package_release.py','frozen_smoke.py',
         'test_engine.py','test_ui.py','test_artwork.py','test_performance_safety.py','test_nsp.py','test_compatibility.py',
-        'test_emulator_patch.py','test_dlc.py','test_file_drops.py','test_nup.py','test_nup_ui.py','test_nup_optimization.py','test_nup_polish.py','frozen_nup_smoke.py','native/container_probe.c','native/build_probe.py','native/build_patterns.py','native/check_emulator_startup.py','.gitignore')
+        'test_emulator_patch.py','test_dlc.py','test_file_drops.py','test_nsp_extract.py','test_extract_ui.py','test_nup.py','test_nup_ui.py','test_nup_optimization.py','test_nup_polish.py','frozen_nup_smoke.py','native/container_probe.c','native/build_probe.py','native/build_patterns.py','native/check_emulator_startup.py','.gitignore')
 
 def source_files():
     paths=[ROOT/p for p in DOCS+SOURCE]

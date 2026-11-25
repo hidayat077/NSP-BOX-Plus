@@ -309,6 +309,36 @@ class PlaintextTests(unittest.TestCase):
             packed = vf.partition(next(b for k, b in sections if k == 'pfs'))
             self.assertEqual(bytes(packed['main']), (exefs / 'main').read_bytes())
 
+    def test_cancel_during_nsz_decompression(self):
+        """A cancel request must interrupt NCZ decompression, not wait for it to finish."""
+        for block in (False, True):
+            with self.subTest(block=block), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                nsp, _, _, prod = encrypted_nsp(root)
+                nsz = nsz_from_nsp(nsp, prod, block=block)
+                event = threading.Event()
+                state = {'finished': False}
+                name = '_block' if block else '_spooled'
+                original = getattr(nx.NczSource, name)
+                if block:
+                    def patched(self, index, _o=original, _e=event, _s=state):
+                        _e.set()
+                        value = _o(self, index)
+                        _s['finished'] = True
+                        return value
+                else:
+                    def patched(self, _o=original, _e=event, _s=state):
+                        _e.set()
+                        value = _o(self)
+                        _s['finished'] = True
+                        return value
+                out = root / 'cancelled.nup'
+                with patch.object(nx.NczSource, name, patched):
+                    with self.assertRaises(InterruptedError):
+                        nx.nsp_to_nup(nsz, out, prod_keys=prod, cancel=event)
+                self.assertFalse(state['finished'], 'cancel ignored during NCZ decompression')
+                self.assertFalse(out.exists())
+
     def test_encrypted_nsp_to_nsp(self):
         import verify_format as vf
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,5 +1,10 @@
 # Release notes
 
+## 4.0.1 — 2026-11-25
+
+- Cancellation now interrupts NSZ/NCZ decompression immediately, in both block and streamed NCZ layouts. Large block NCZ files also use precomputed block offsets instead of re-summing the size table on every read.
+- The Extract panel keeps a chosen output folder when the source file or conversion mode changes, so results no longer fall back beside the ROM.
+
 ## 4.0.0 — Meet NUP
 
 Smaller archives, flexible packaging, and more control over your game collection. Version 4.0 introduces **NUP Tools**, alongside the existing NSP builder.
